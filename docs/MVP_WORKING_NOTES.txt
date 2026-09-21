@@ -1,0 +1,322 @@
+MVP WORKING NOTES
+Version: 0.1
+Status: Working draft / product decisions
+
+PRODUCT CONCEPT
+Anki × Duolingo × Notion
+
+Core idea:
+- Anki: memory / retention engine
+- Duolingo: engagement / battle learning experience
+- Notion: knowledge accumulation / deck ownership
+
+MVP PLATFORM
+- Mobile-first web app
+- Closed beta via private URL
+- English UI by default
+- Content language handled separately
+- Native iOS / Android out of scope
+- GitHub used from day 1
+- Vercel for hosting
+- Supabase for auth/database
+- Claude Code used for implementation support
+
+TESTERS
+- Alpha: 5 users
+- Closed beta: up to ~30 users
+- Tester IDs: 001-030
+- Admin ID: 999
+- Unique memorable passwords per tester
+- Persistent login/session so users do not need to type credentials every time
+- First login asks user to choose a nickname
+- Nickname can be changed later
+
+STARTER DECKS
+- Advanced English Vocabulary I
+  - 100 cards
+  - English front / Japanese answer
+  - Description references approximate TOEFL level
+- Advanced English Vocabulary II
+  - 100 cards
+  - English front / Japanese answer
+  - Description references approximate TOEFL level
+- Actual 200 words supplied separately as CSV seed data
+
+SESSION / DECK SCOPE
+- Multiple decks are NOT mixed within one session
+- User studies only the currently selected deck
+- Start Session:
+  1. Due review cards from selected deck first
+  2. When reviews are cleared, automatically continue into learning cards from same deck
+- No separate Review button on Home
+- Review vs learning is an internal mode change only
+- Combo, current enemy, enemy HP, XP, and battle state continue through the transition
+- Brief "Reviews Cleared" feedback may appear
+
+FLASHCARD ANSWER UX
+- Traditional front/back flashcard
+- Show front
+- User recalls mentally
+- User taps Show Answer
+- Back is shown
+- User selects Correct or Wrong
+- Recall time is measured from front display until Show Answer
+- Correct/Wrong selection itself is not the response-time measurement
+
+ACTIVE POOL / MASTERY
+- MVP uses Active Pool only
+- Target size: ~30 cards
+- Eligible statuses: NEW, LEARNING, FORGOTTEN
+- FORGOTTEN gets priority
+- NEW cards refill available slots
+- Pre-Active Pool removed for MVP
+- Outside Pool removed for MVP
+
+Card lifecycle:
+NEW -> LEARNING -> LEARNED <-> FORGOTTEN
+
+Mastery rule:
+- correct_streak >= 4
+- seen_count >= 5
+=> LEARNED
+
+RETENTION / FSRS
+- Use ts-fsrs
+- request_retention = 0.90
+- enable_fuzz = true
+- enable_short_term = true
+- FSRS is responsible for memory state and next review scheduling
+- Custom estimator converts Correct/Wrong + behavior into Again/Hard/Good/Easy
+- MVP uses rule-based estimator
+- Future version personalizes relative response speed by user/card history
+
+Provisional rating logic:
+- Wrong -> Again
+- Correct + very slow recall -> Hard
+- Correct + normal recall -> Good
+- Correct + fast recall + seen_count >= 4 + stable recent correct history + previous answer not Wrong -> Easy
+- Exact time thresholds remain configurable / TBD
+
+FORGOTTEN rule in review:
+- Same card Wrong twice in the same review portion of a session -> FORGOTTEN
+- Card returns to Active Pool
+- Previous FSRS history/state is kept
+- After re-mastery, retention scheduling continues from accumulated history
+
+BATTLE
+- Learning session is represented as battle
+- Enemy continuously spawns after defeat
+- Session is endless until user chooses to stop
+- 3 enemy types in MVP
+- Enemy appearance differs
+- Enemy HP differs slightly
+- Enemy spawn is random
+- No attributes/skills/elements in MVP
+
+Initial enemy HP:
+- Enemy A: 90
+- Enemy B: 105
+- Enemy C: 120
+
+Damage:
+- Correct -> damage
+- Wrong -> 0 damage and combo reset
+- Base damage random integer 24-28
+- Small randomness is intentional
+- Combo bonus
+- Speed bonus
+- Critical chance
+
+Combo:
+- Consecutive Correct answers increase combo
+- Wrong resets combo to 0
+- Cap: x10
+- Suggested damage bonus:
+  x1-2: +0
+  x3-4: +2
+  x5-6: +4
+  x7-8: +6
+  x9-10: +8
+
+Speed bonus:
+- Max +3 damage
+- Exact thresholds TBD/configurable
+- Future personalization should use relative response speed
+
+Critical:
+- 5% probability
+- Final damage x2
+- Does not affect memory rating / FSRS
+- Strongest visual feedback effect
+
+Visual effects:
+- Correct: damage popup, enemy hit reaction, HP decrease
+- Combo milestones: visual emphasis at x3/x5/x10
+- Speed: brief FAST indicator
+- Critical: large CRITICAL text, larger damage number, stronger hit reaction, short flash/shake/particles
+- Effects should be short and not slow the learning loop
+
+DAILY GOAL / STREAK
+- Daily Goal: defeat 5 enemies
+- Avoid displaying a fixed number of required questions
+- Goal complete screen offers Continue / Finish
+- Streak increases only when Daily Goal is completed
+- Simply opening app or answering one card does not preserve streak
+
+XP / LEVEL
+Provisional XP:
+- Correct Answer: +2 XP
+- Card becomes LEARNED: +15 XP
+- FORGOTTEN card becomes LEARNED again: +15 XP
+- Enemy Defeated: +20 XP
+- Daily Goal Complete: +30 XP
+- No direct XP for combo, speed bonus, critical, wrong answer
+
+Provisional level curve:
+XP required for next level =
+200 + 50 * (current_level - 1)
+
+Examples:
+Lv1->2: 200
+Lv2->3: 250
+Lv3->4: 300
+...
+
+LEADERBOARD
+- Metric: enemies defeated
+- Weekly leaderboard
+- All-time leaderboard
+- Not shown on Home
+- Weekly reset: Monday 00:00 Japan time (Asia/Tokyo)
+- Tie ranking uses competition ranking:
+  5th, 5th, 7th
+- Display nickname, not tester ID
+
+HOME
+Use the previous concept image as initial layout reference:
+- Top: avatar / nickname / streak / level + XP
+- Center: character / visual
+- Main CTA: START SESSION
+- Below: learning progress / selected deck / daily goal progress
+- Bottom nav: Home / Dictionary / Stats
+- Keep Home visually simple
+
+DICTIONARY
+- View cards
+- Filter by status
+- Add/Edit/Delete card
+- Users may add personal cards directly to existing decks
+- New personal cards enter that deck as NEW
+- Future: AI-assisted card creation from English input to Japanese meaning suggestions
+
+STATS
+Initial candidate sections:
+Study:
+- Total Study Time
+- Total Sessions
+- Total Answers
+
+Knowledge:
+- Learned
+- Learning
+- New
+
+Performance:
+- Accuracy
+- Longest Combo
+- Average Response Time
+
+Battle:
+- Enemies Defeated
+- Critical Hits
+- Weekly Rank
+- All-time Rank
+
+Consistency:
+- Current Streak
+- Longest Streak
+
+Progression:
+- Level
+- Total XP
+
+ADMIN / DATA
+- Admin account: 999
+- Admin-only dashboard
+- Tester cannot access other users' data
+- Use Supabase RLS
+- Admin should be able to inspect user-level learning data
+- CSV export desirable
+- Raw answer events are essential
+
+Raw answer event fields should include at least:
+- user_id
+- card_id
+- session_id
+- answered_at
+- correct
+- response_time_ms
+- card_seen_count_at_answer
+- correct_streak_before
+- wrong_streak_before
+- previous_answer
+- card_status_before
+- session_mode
+- damage
+- combo
+- critical
+- time_since_last_seen
+- previous_review_interval where relevant
+
+BETA TEST
+Alpha:
+- 5 users
+- 3-5 days
+- Purpose: usability / bugs / data integrity
+
+Closed beta:
+- ~30 users
+- ~14 days
+- Ask users to use naturally; do not force "10 minutes every day"
+- Expected typical daily use: around 5-15 minutes
+- Avoid individual reminders during beta if measuring organic return
+
+Key metrics:
+- First Enemy Completion
+- D1/D3/D7 Return
+- Daily Goal Completion Rate
+- Post-Goal Continuation Rate
+- Session Duration
+- Answers per Session
+- Review Due Completion Rate
+- Accuracy by seen_count
+- Response Time by seen_count
+- Mastery exposures
+- Forgotten rate
+- Wrong -> next attempt correct rate
+- Qualitative feedback
+
+Main MVP success signals:
+1. Users voluntarily return
+2. Users often continue after Daily Goal is complete
+3. Learning improves with exposure:
+   accuracy rises and recall time falls
+4. No critical data loss / review logic failures
+
+OUT OF MVP
+- Native apps
+- Public release
+- SNS/community
+- Friends/PvP
+- Creator economy
+- Deck marketplace
+- Bosses
+- Rare enemy system
+- Monster collection
+- Equipment/items/currency/shop
+- Hearts/energy
+- Advanced character system
+- Advanced AI analysis
+- ML personalization
+- AI-assisted card creation
+- Complex Notion-like database features
