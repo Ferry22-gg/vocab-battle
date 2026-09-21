@@ -1,6 +1,20 @@
 MVP WORKING NOTES
-Version: 0.1
+Version: 0.2
 Status: Working draft / product decisions
+
+DOCUMENT ROLES
+- MVP_WORKING_NOTES.txt
+  = product decision log / working draft
+- MVP_OVERVIEW.md
+  = human-facing overview
+- MVP_SPEC_FOR_CLAUDE.md
+  = product behavior / UX / business-rule source of truth for implementation
+- DATABASE_SCHEMA.md
+  = database structure / RLS / FK / index / transaction source of truth
+
+If MVP_SPEC_FOR_CLAUDE.md and DATABASE_SCHEMA.md imply conflicting product behavior:
+- do not silently choose one
+- surface the conflict before implementation
 
 PRODUCT CONCEPT
 Anki × Duolingo × Notion
@@ -20,8 +34,9 @@ MVP PLATFORM
 - Vercel for hosting
 - Supabase for auth/database
 - Claude Code used for implementation support
+- Supabase schema implemented with version-controlled migrations
 
-TESTERS
+TESTERS / AUTH
 - Alpha: 5 users
 - Closed beta: up to ~30 users
 - Tester IDs: 001-030
@@ -30,6 +45,11 @@ TESTERS
 - Persistent login/session so users do not need to type credentials every time
 - First login asks user to choose a nickname
 - Nickname can be changed later
+- Admin is excluded from analytics
+- Admin preview/testing must not write production learner history
+- Supabase Auth stores credentials
+- Do not store passwords in application tables
+- Supabase RLS protects private learner data
 
 STARTER DECKS
 - Advanced English Vocabulary I
@@ -42,9 +62,21 @@ STARTER DECKS
   - Description references approximate TOEFL level
 - Actual 200 words supplied separately as CSV seed data
 
+STARTER DECK OWNERSHIP MODEL
+- Official starter decks are templates
+- On onboarding, user chooses one starter deck
+- App duplicates the entire selected deck
+- All 100 cards are duplicated with new card IDs
+- One NEW user_card_progress row is created per copied card
+- The duplicated deck becomes the user's independent deck
+- source_deck_id / source_card_id preserve provenance
+- User edits never affect official templates or other users
+- The unselected starter deck remains available to add later
+- Starter duplication must be idempotent and transactional
+
 SESSION / DECK SCOPE
 - Multiple decks are NOT mixed within one session
-- User studies only the currently selected deck
+- User studies only the currently selected user-owned deck
 - Start Session:
   1. Due review cards from selected deck first
   2. When reviews are cleared, automatically continue into learning cards from same deck
@@ -52,6 +84,23 @@ SESSION / DECK SCOPE
 - Review vs learning is an internal mode change only
 - Combo, current enemy, enemy HP, XP, and battle state continue through the transition
 - Brief "Reviews Cleared" feedback may appear
+
+SESSION RESUME
+- Pressing START SESSION creates/resumes one session
+- Closing the app does NOT automatically complete the session
+- Unfinished session remains active
+- On return, user can Resume or Finish
+- Resume restores:
+  - enemy type
+  - enemy max/current HP
+  - combo
+  - session XP
+  - session enemy count
+  - Daily Goal progress
+  - learning draw index
+- The unanswered card that was visible at app close is NOT restored
+- No answer_event is created for an unanswered card
+- Resume draws a fresh next card
 
 FLASHCARD ANSWER UX
 - Traditional front/back flashcard
@@ -65,10 +114,13 @@ FLASHCARD ANSWER UX
 
 ACTIVE POOL / MASTERY
 - MVP uses Active Pool only
+- Active Pool is DERIVED, not stored as a separate table/flag
 - Target size: ~30 cards
 - Eligible statuses: NEW, LEARNING, FORGOTTEN
-- FORGOTTEN gets priority
-- NEW cards refill available slots
+- Priority:
+  1. FORGOTTEN
+  2. existing LEARNING
+  3. NEW refill
 - Pre-Active Pool removed for MVP
 - Outside Pool removed for MVP
 
@@ -80,12 +132,27 @@ Mastery rule:
 - seen_count >= 5
 => LEARNED
 
+LEARNING DRAW / REAPPEARANCE
+- Learning draw position is tracked per session
+- Review cards do not increment learning draw index
+- Correct at draw N:
+  - cannot appear in the next 10 Learning draws
+  - next eligible draw = N + 11
+- Wrong at draw N:
+  - must reappear 6-9 Learning draws later
+  - forced position is randomly chosen
+- If two forced reappearances collide:
+  - later reservation shifts forward until a free position is found
+- Queue/cooldown state survives session resume
+- This queue is NOT the Active Pool
+
 RETENTION / FSRS
 - Use ts-fsrs
 - request_retention = 0.90
 - enable_fuzz = true
 - enable_short_term = true
 - FSRS is responsible for memory state and next review scheduling
+- Product card_status and internal FSRS state remain separate
 - Custom estimator converts Correct/Wrong + behavior into Again/Hard/Good/Easy
 - MVP uses rule-based estimator
 - Future version personalizes relative response speed by user/card history
@@ -97,16 +164,25 @@ Provisional rating logic:
 - Correct + fast recall + seen_count >= 4 + stable recent correct history + previous answer not Wrong -> Easy
 - Exact time thresholds remain configurable / TBD
 
-FORGOTTEN rule in review:
-- Same card Wrong twice in the same review portion of a session -> FORGOTTEN
-- Card returns to Active Pool
+REVIEW QUEUE
+- Review queue is fixed when the review portion starts
+- Cards that become due afterward are NOT added to the same review portion
+- First Wrong:
+  - wrong_count = 1
+  - move card to back of review queue
+- Second Wrong in same review portion:
+  - wrong_count = 2
+  - card_status = FORGOTTEN
+  - review queue item is considered completed
+  - card becomes eligible for Learning Active Pool
 - Previous FSRS history/state is kept
 - After re-mastery, retention scheduling continues from accumulated history
+- Review wrong_count survives session resume
 
 BATTLE
 - Learning session is represented as battle
 - Enemy continuously spawns after defeat
-- Session is endless until user chooses to stop
+- Session is endless until user explicitly finishes
 - 3 enemy types in MVP
 - Enemy appearance differs
 - Enemy HP differs slightly
@@ -162,6 +238,8 @@ DAILY GOAL / STREAK
 - Goal complete screen offers Continue / Finish
 - Streak increases only when Daily Goal is completed
 - Simply opening app or answering one card does not preserve streak
+- Asia/Tokyo day boundary
+- Daily Goal XP and streak must be idempotent: max once per user per JST date
 
 XP / LEVEL
 Provisional XP:
@@ -182,15 +260,25 @@ Lv2->3: 250
 Lv3->4: 300
 ...
 
+XP DATA MODEL
+- Current cumulative XP lives on profile state
+- Why XP changed is stored in append-only xp_events
+- XP events must be idempotent
+- Admin adjustments use explicit admin logic
+
 LEADERBOARD
 - Metric: enemies defeated
 - Weekly leaderboard
 - All-time leaderboard
 - Not shown on Home
-- Weekly reset: Monday 00:00 Japan time (Asia/Tokyo)
+- Weekly reset: Monday 00:00 Asia/Tokyo
+- Weekly leaderboard is derived from daily_user_stats
+- All-time leaderboard is derived from profile lifetime enemy total
+- No dedicated leaderboard table in MVP
 - Tie ranking uses competition ranking:
   5th, 5th, 7th
 - Display nickname, not tester ID
+- Exclude admin / exclude_from_analytics accounts
 
 HOME
 Use the previous concept image as initial layout reference:
@@ -201,12 +289,14 @@ Use the previous concept image as initial layout reference:
 - Bottom nav: Home / Dictionary / Stats
 - Keep Home visually simple
 
-DICTIONARY
+DICTIONARY / DECK EDITING
 - View cards
 - Filter by status
 - Add/Edit/Delete card
-- Users may add personal cards directly to existing decks
+- Users edit only their own duplicated/user-owned decks
+- Official templates are read-only
 - New personal cards enter that deck as NEW
+- Deck/card deletion uses soft delete so history is preserved
 - Future: AI-assisted card creation from English input to Japanese meaning suggestions
 
 STATS
@@ -240,33 +330,91 @@ Progression:
 - Level
 - Total XP
 
+DATA ARCHITECTURE
+Three layers:
+1. Current state
+   - profiles
+   - user_card_progress
+   - sessions
+2. Append-only raw history
+   - answer_events
+   - xp_events
+3. Aggregate/cache
+   - daily_user_stats
+
+Raw history is the authoritative audit trail for beta analysis.
+
+RAW ANSWER EVENTS
+- One answered card = one append-only answer_event
+- Never update/delete normal answer events
+- Client generates client_event_id UUID for idempotency
+- Retry/double tap with same client_event_id must not double-process
+- Raw event should capture at least:
+  - user_id
+  - card_id
+  - deck_id
+  - session_id
+  - answered_at
+  - correct
+  - response_time_ms
+  - session_mode
+  - card_seen_count_at_answer
+  - correct_streak_before
+  - wrong_streak_before
+  - previous_answer
+  - card_status_before
+  - card_status_after
+  - correct_streak_after
+  - wrong_streak_after
+  - time_since_last_seen
+  - previous_review_interval
+  - fsrs_rating
+  - fsrs_due_before
+  - fsrs_due_after
+  - base_damage
+  - speed_bonus
+  - combo
+  - damage
+  - critical
+  - enemy_hp_before
+  - enemy_hp_after
+
 ADMIN / DATA
 - Admin account: 999
 - Admin-only dashboard
-- Tester cannot access other users' data
+- Tester cannot access other users' private data
 - Use Supabase RLS
 - Admin should be able to inspect user-level learning data
-- CSV export desirable
-- Raw answer events are essential
+- CSV export included for beta analysis
+- Admin may read required beta data
+- Admin must NOT have unrestricted edit access to raw learner history
+- Admin preview activity does not enter learner datasets
+- Analytics include only:
+  role = tester
+  AND exclude_from_analytics = false
 
-Raw answer event fields should include at least:
-- user_id
-- card_id
-- session_id
-- answered_at
-- correct
-- response_time_ms
-- card_seen_count_at_answer
-- correct_streak_before
-- wrong_streak_before
-- previous_answer
-- card_status_before
-- session_mode
-- damage
-- combo
-- critical
-- time_since_last_seen
-- previous_review_interval where relevant
+TRANSACTION / INTEGRITY REQUIREMENTS
+Critical multi-table operations are atomic.
+Use Postgres transactions / trusted database functions where appropriate.
+
+Important trusted operations:
+- duplicate_starter_deck()
+- submit_answer()
+
+submit_answer() must atomically handle:
+- lifecycle updates
+- FSRS state
+- review/learning queue state
+- battle state
+- raw answer event
+- session aggregates
+- daily aggregates
+- XP events
+- profile XP/level
+- Daily Goal / streak if triggered
+
+If one step fails:
+- rollback entire operation
 
 BETA TEST
 Alpha:
@@ -295,6 +443,10 @@ Key metrics:
 - Forgotten rate
 - Wrong -> next attempt correct rate
 - Qualitative feedback
+
+Analytics origin:
+- D1/D3/D7 is based on first real START SESSION activity
+- not account creation time
 
 Main MVP success signals:
 1. Users voluntarily return

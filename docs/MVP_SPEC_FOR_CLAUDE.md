@@ -1,18 +1,53 @@
 # MVP Implementation Specification for Claude Code
 
-## 1. Role and instruction
+**Version:** 0.2  
+**Status:** Product implementation specification
+
+## 1. Document authority and implementation rule
 
 You are implementing a closed-beta, mobile-first web MVP.
 
-Treat this document as the primary product specification.
+This document is the primary source of truth for:
 
-Do not invent product behavior that conflicts with this document.
+- product behavior
+- UX
+- business rules
+- learning rules
+- battle rules
+- beta behavior
 
-When a requirement is marked **provisional**, keep the relevant values configurable in one central configuration module.
+`docs/DATABASE_SCHEMA.md` is the primary source of truth for:
 
-Before making a large architectural decision that is not specified here, explain the choice and choose the simplest implementation that preserves future extensibility.
+- table/column structure
+- foreign keys
+- indexes
+- Row Level Security
+- migrations
+- transaction boundaries
+- idempotency
+- database implementation details
 
-Use Git from the beginning. Make small, meaningful commits after stable milestones.
+If these two documents appear to imply conflicting product behavior:
+
+- do not silently choose one
+- stop and surface the conflict before implementation
+
+Do not invent product behavior that conflicts with either document.
+
+When a value is marked **provisional**, keep it configurable in one central configuration module.
+
+Before making a large architectural decision that is not specified, explain the choice and choose the simplest implementation that preserves future extensibility.
+
+Use Git from the beginning.
+
+After each stable milestone:
+
+1. test the feature
+2. verify relevant database writes
+3. run migrations/build/tests as applicable
+4. inspect `git diff`
+5. commit with a meaningful message
+6. push when the milestone is stable
 
 ## 2. Product
 
@@ -25,7 +60,11 @@ Core MVP idea:
 - a mastery engine teaches cards
 - FSRS schedules learned cards
 - a battle layer gamifies the learning loop
-- decks act as the user's knowledge base
+- user-owned decks become the learner's knowledge base
+
+Important product principle:
+
+> The user should experience one simple learning loop even though the internal memory system is complex.
 
 ## 3. Platform and stack
 
@@ -47,82 +86,156 @@ Preferred stack:
 - GitHub
 - pnpm
 
+Database changes must be implemented with version-controlled Supabase migrations rather than only manual dashboard edits.
+
 Do not implement native iOS or Android apps.
 
-## 4. User roles
+## 4. User roles and authentication
 
 ### Tester
+
 Public-facing beta IDs:
 
 `001` through `030`
 
 Each tester receives a unique memorable password.
 
-The user-facing login form should ask for:
+The user-facing login form asks for:
 
 - User ID
 - Password
 
-Keep the user signed in using normal secure session persistence so that they do not need to log in on every visit.
+Keep the user signed in using secure normal session persistence so that they do not need to log in on every visit.
+
+No public sign-up.
+
+No tester email-verification flow.
+
+No tester email password-reset flow during beta.
+
+If a tester forgets a password, admin resets it.
 
 ### Admin
+
 Public-facing admin ID:
 
 `999`
 
 Admin uses a separate stronger password.
 
-Admin can access `/admin`.
+Admin can access:
+
+`/admin`
+
+Admin must:
+
+- be excluded from beta analytics
+- be excluded from leaderboard
+- not contaminate learner datasets when previewing/testing the learner UI
 
 Tester accounts must not be able to access `/admin` or another tester's private learning data.
 
-Use Supabase Auth and Row Level Security.
+Use Supabase Auth and RLS according to `DATABASE_SCHEMA.md`.
 
-The exact internal mapping between simple public IDs and Supabase Auth may be chosen during implementation, but public UX must remain ID + password.
+The internal Auth mapping may use an implementation-only identifier, but testers must only see and enter public ID + password.
 
 ## 5. First-login flow
 
 On the user's first successful login:
 
-1. Choose nickname
-2. Show a very short tutorial
-3. Choose starter deck
-4. Enter Home
+1. choose nickname
+2. show a very short tutorial
+3. choose one starter deck
+4. duplicate the selected starter deck into the user's independent library
+5. set the duplicated deck as selected
+6. enter Home
 
 Nickname:
+
 - stored separately from tester ID
 - shown on leaderboard
 - editable later
+- case-insensitive uniqueness where practical
 - keep validation simple
-- avoid duplicate nicknames if practical
 
 Do not ask unnecessary onboarding questions such as daily study time or English level.
 
-## 6. Starter decks
+## 6. Starter decks and duplication
 
-Two starter decks exist.
+Two official starter deck templates exist.
 
 ### Advanced English Vocabulary I
+
 - 100 cards
 - front: English
 - back: Japanese
 - description references approximate TOEFL level
 
 ### Advanced English Vocabulary II
+
 - 100 cards
 - front: English
 - back: Japanese
 - description references higher approximate TOEFL level
 
-The supplied CSV files should be imported as seed data.
+The supplied CSV files are imported as official template seed data.
 
-Only the currently selected deck is used in a session.
+### Template -> independent copy model
 
-Do not mix multiple decks inside a session.
+When the user chooses a starter deck:
 
-## 7. Card lifecycle
+1. validate source deck is an allowed official starter template
+2. duplicate the selected deck
+3. duplicate all 100 cards with new IDs
+4. preserve provenance with source deck/card references
+5. create one NEW learning-progress row per duplicated card
+6. set the duplicated deck as the user's selected deck
 
-Statuses:
+The duplicated deck is independent.
+
+User edits must never change:
+
+- the official template
+- another user's copy
+
+The unselected official starter deck remains available to add later.
+
+The duplication flow must be transactional and idempotent according to `DATABASE_SCHEMA.md`.
+
+Only the currently selected user-owned deck is used in a session.
+
+Do not mix multiple decks within one session.
+
+## 7. Deck and card ownership
+
+Users may:
+
+- browse their own decks/cards
+- add cards
+- edit cards
+- delete cards from the user's perspective
+
+Users may modify only user-owned deck copies.
+
+Official template decks/cards are read-only to testers.
+
+Normal deletion must preserve historical learning references. Follow the soft-delete behavior in `DATABASE_SCHEMA.md`.
+
+New user-created cards:
+
+- belong to a user-owned deck
+- start as `NEW`
+
+MVP manual card fields:
+
+- English front
+- Japanese back
+
+Future AI-assisted card creation is out of MVP.
+
+## 8. Card lifecycle
+
+Product statuses:
 
 - NEW
 - LEARNING
@@ -132,6 +245,8 @@ Statuses:
 Lifecycle:
 
 `NEW -> LEARNING -> LEARNED <-> FORGOTTEN`
+
+Product `card_status` and internal FSRS state are separate concepts.
 
 When a NEW card is first shown in learning mode:
 
@@ -145,84 +260,215 @@ A learning card becomes LEARNED when:
 - AND `seen_count >= 5`
 
 When a card becomes LEARNED:
-- remove it from Active Pool
-- pass it to the retention/FSRS system
 
-## 8. Active Pool
+- remove it from Active Pool eligibility
+- update mastery timestamps
+- pass it to retention / FSRS scheduling
+- award card-learned XP exactly once for that mastery event
 
-MVP uses only one learning pool.
+Re-mastery after FORGOTTEN:
 
-Do not implement Pre-Active Pool.
+- preserves first mastery timestamp
+- updates last mastery timestamp
+- awards card-relearned XP
+- resumes retention using accumulated FSRS history
 
-Do not implement Outside Pool.
+## 9. Active Pool
 
-Active Pool target size:
+MVP uses one learning pool only.
+
+Do not implement:
+
+- Pre-Active Pool
+- Outside Pool
+- an Active Pool database table
+- an `in_active_pool` flag
+
+Active Pool is derived from current user-card state for the selected deck.
+
+Target size:
 
 approximately 30 cards
 
 Eligible statuses:
 
-- NEW
-- LEARNING
 - FORGOTTEN
+- LEARNING
+- NEW
 
 Priority:
+
 1. FORGOTTEN
-2. existing LEARNING cards
+2. existing LEARNING
 3. NEW cards as refill
 
-Treat 30 as a target size rather than a dangerous hard constraint if a FORGOTTEN card must be reintroduced.
+Treat 30 as a target size rather than a hard safety limit if a FORGOTTEN card must be reintroduced.
 
-## 9. Session architecture
+## 10. Session model
 
-User sees only one primary CTA:
+User sees one primary CTA:
 
 **START SESSION**
 
 Do not create a separate Review button.
 
-Session behavior for currently selected deck:
+A session begins when the user starts/resumes learning for one selected deck.
 
-1. If selected deck has due review cards, serve them first.
-2. When all due reviews are cleared, automatically transition into learning cards from the same deck.
-3. Continue as an endless battle until user chooses to stop.
+Within the same session:
 
-The transition from review to learning must preserve:
+1. serve the fixed due-review queue for that deck if reviews are due
+2. when review is cleared, automatically transition to learning mode
+3. continue as an endless battle until user explicitly finishes
+
+The transition from review to learning preserves:
+
 - combo
-- current enemy
-- enemy HP
-- XP/session state
+- current enemy type
+- enemy max/current HP
+- XP gained in the session
+- enemy count
+- Daily Goal progress
 
-Optionally show a brief:
-`Reviews Cleared`
+A brief `Reviews Cleared` effect may be shown.
 
-Do not force a result screen merely because review cards are finished.
+Do not force a result screen merely because reviews are complete.
 
-## 10. Flashcard interaction
+## 11. Session interruption and resume
+
+Closing the app does **not** automatically complete the session.
+
+An unfinished session remains active.
+
+On a later app launch, if an active unfinished session exists:
+
+- show previous session summary/state
+- offer:
+  - Resume
+  - Finish
+
+Resume restores:
+
+- current enemy type
+- enemy max/current HP
+- current combo
+- session XP
+- enemies defeated in session
+- Daily Goal progress
+- learning draw index
+- persisted review queue state
+- persisted learning cooldown/reappearance state
+
+The card that was visible but unanswered when the app closed is **not restored**.
+
+Do not create an answer event for an unanswered card.
+
+Resume draws a fresh next card.
+
+## 12. Review queue
+
+At the start of the review portion:
+
+- determine the due review cards for the selected deck
+- fix that queue for the current review portion
+
+Cards that become due after the review portion starts are not added to that same review queue.
+
+For one review card:
+
+### Correct
+
+- mark review item completed
+
+### First Wrong in the same review portion
+
+- internal rating = Again
+- increment review wrong count
+- move card to back of review queue
+
+### Second Wrong in the same review portion
+
+- increment review wrong count
+- `card_status = FORGOTTEN`
+- mark review item completed
+- card becomes eligible for Learning Active Pool
+
+The review wrong count must survive session interruption/resume.
+
+Preserve all accumulated FSRS history/state.
+
+## 13. Learning draw / cooldown / forced reappearance
+
+Learning draw position is tracked per session.
+
+Review cards do not increment the Learning draw index.
+
+### Correct at Learning draw N
+
+The card cannot appear in the next 10 Learning draws.
+
+Conceptually:
+
+`next_eligible_draw_index = N + 11`
+
+Clear any previous forced-reappearance reservation.
+
+### Wrong at Learning draw N
+
+Choose a random gap:
+
+`6..9`
+
+Schedule:
+
+`forced_reappear_draw_index = N + gap`
+
+If the forced position is already reserved:
+
+- shift the newly scheduled reservation forward until a free position is found
+
+This per-session queue state must survive session resume.
+
+This queue/cooldown state is not the same thing as the Active Pool.
+
+## 14. Flashcard interaction
 
 Each card uses a traditional front/back flashcard flow.
 
-1. Show front
-2. Start recall timer
-3. User recalls mentally
-4. User taps `Show Answer`
-5. Stop recall timer
-6. Show back
-7. User taps `Correct` or `Wrong`
+1. show front
+2. start recall timer
+3. user recalls mentally
+4. user taps `Show Answer`
+5. stop recall timer
+6. show back
+7. user taps `Correct` or `Wrong`
 
 Important:
 
 `response_time_ms` is measured from front display until `Show Answer`.
 
-Do not include the time spent reading the revealed answer or choosing Correct/Wrong.
+Do not include:
 
-## 11. Raw answer event logging
+- time spent reading the revealed answer
+- time spent deciding Correct/Wrong after reveal
 
-Every answered card should create a raw event.
+## 15. Raw answer event logging
 
-Store at least:
+Every answered card creates exactly one append-only answer event.
 
-- event id
+Client generates:
+
+`client_event_id UUID`
+
+Use it for idempotency.
+
+A retry/double tap with the same `client_event_id` must not process the answer twice.
+
+Preserve raw history.
+
+Do not only store aggregates.
+
+The answer event should capture the exact fields defined in `DATABASE_SCHEMA.md`, including at least:
+
 - user_id
 - card_id
 - deck_id
@@ -230,23 +476,36 @@ Store at least:
 - answered_at
 - correct
 - response_time_ms
+- session_mode
 - card_seen_count_at_answer
 - correct_streak_before
 - wrong_streak_before
-- previous_answer if available
+- previous_answer
 - card_status_before
-- session_mode (`review` or `learning`)
-- damage
-- combo
-- critical
+- card_status_after
+- correct_streak_after
+- wrong_streak_after
 - time_since_last_seen
-- previous_review_interval where applicable
+- previous_review_interval
+- fsrs_rating
+- fsrs_due_before
+- fsrs_due_after
+- base_damage
+- speed_bonus
+- combo
+- damage
+- critical
+- enemy_hp_before
+- enemy_hp_after
 
-Preserve raw history. Do not only store aggregates.
+Normal answer events are append-only.
 
-## 12. Internal FSRS rating estimator
+Do not update or delete them during ordinary product use.
+
+## 16. Internal FSRS rating estimator
 
 The user never selects:
+
 - Again
 - Hard
 - Good
@@ -257,36 +516,47 @@ The app internally estimates one of those ratings.
 ### Provisional MVP logic
 
 Wrong:
-- `Again`
+
+- Again
 
 Correct + very slow recall:
-- `Hard`
+
+- Hard
 
 Correct + normal recall:
-- `Good`
 
-Correct + fast recall:
-- eligible for `Easy` only if:
-  - `seen_count >= 4`
-  - recent history is stable
-  - previous answer was not Wrong
+- Good
+
+Correct + fast recall is eligible for Easy only if:
+
+- `seen_count >= 4`
+- recent history is stable
+- previous answer was not Wrong
 
 If those Easy eligibility conditions are not met:
-- use `Good`
+
+- Good
 
 Exact response-time thresholds are not finalized.
 
 Create configurable constants for:
+
 - HARD response threshold
 - EASY response threshold
 
-Do not bury these values throughout the codebase.
+Do not scatter thresholds through the codebase.
 
-Future versions will evaluate response speed relative to the specific user's historical behavior and possibly the specific user-card pair.
+Future versions will evaluate response speed relative to:
 
-## 13. FSRS
+- the specific user's history
+- the specific card's history
+- possibly the specific user-card pair
 
-Use `ts-fsrs`.
+## 17. FSRS
+
+Use:
+
+`ts-fsrs`
 
 Initial configuration:
 
@@ -303,45 +573,72 @@ The custom rating estimator is outside FSRS.
 
 Do not rewrite the FSRS algorithm.
 
-## 14. Review failure / FORGOTTEN
+Product `card_status` and internal FSRS state remain separate.
 
-Within the review portion of one session:
+When a card becomes FORGOTTEN:
 
-First Wrong on a LEARNED review card:
-- rate as Again
-- reinsert the card later in that same review flow
+- do not reset accumulated FSRS history/state
 
-Second Wrong on the same card during that review portion:
-- `card_status = FORGOTTEN`
-- move card back to Active Pool
-- preserve previous FSRS history/state
+After re-mastery:
 
-Do not reset FSRS state/history.
+- continue retention using accumulated FSRS history
 
-After the FORGOTTEN card satisfies the mastery rule again:
-- set `card_status = LEARNED`
-- resume retention scheduling using the accumulated FSRS history
+## 18. Atomic answer processing
 
-## 15. Battle system
+Answer submission is a critical multi-table operation.
+
+Implement it as a trusted atomic operation according to `DATABASE_SCHEMA.md`.
+
+Conceptually one successful answer transaction must include, where applicable:
+
+- validate authenticated active tester
+- validate active session and deck/card context
+- enforce `client_event_id` idempotency
+- capture pre-answer state
+- update seen/streak/last-seen state
+- apply mastery/FORGOTTEN lifecycle rules
+- estimate internal FSRS rating
+- update FSRS state/due date
+- update review queue or learning queue state
+- calculate battle result
+- update enemy state / respawn
+- insert raw answer event
+- update session aggregates
+- update daily aggregate state
+- insert XP ledger events
+- update profile XP / level
+- process Daily Goal / streak exactly once if triggered
+
+If any required step fails:
+
+- rollback the entire answer operation
+
+Do not allow partial answer processing.
+
+## 19. Battle system
 
 The learning session is visually a battle.
 
 There are 3 enemy types in MVP.
 
 Enemy differences:
+
 - different appearance
 - slightly different HP
 
 Enemy spawn:
+
 - random
 - approximately equal probability
 
 Initial HP:
+
 - Enemy A: 90
 - Enemy B: 105
 - Enemy C: 120
 
 Do not implement:
+
 - elements
 - skills
 - status effects
@@ -349,30 +646,37 @@ Do not implement:
 - enemy abilities
 
 After an enemy is defeated:
+
 - immediately spawn another
 
-Battle is endless until user exits.
+Battle is endless until user explicitly finishes the session.
 
-## 16. Damage system
+## 20. Damage system
 
 ### Correct
+
 Deal damage.
 
 ### Wrong
+
 - 0 damage
 - combo resets to 0
 
 ### Base damage
+
 Random integer:
+
 - minimum 24
 - maximum 28
 
 Keep the random range configurable.
 
 ### Combo
+
 Consecutive Correct answers increase combo.
 
 Combo cap:
+
 `x10`
 
 Wrong resets combo to 0.
@@ -386,46 +690,57 @@ Initial combo damage bonus:
 - x9–10: +8
 
 ### Speed bonus
+
 Initial maximum:
+
 `+3`
 
 Exact time thresholds remain configurable.
 
 ### Critical
+
 Probability:
+
 `5%`
 
 Effect:
+
 `final damage x2`
 
 Critical is random.
 
 Critical must not influence:
+
 - memory rating
 - FSRS
 - XP directly
 
 Target average:
+
 roughly 3–4 correct answers to defeat one enemy.
 
-## 17. Battle visual feedback
+## 21. Battle visual feedback
 
 Effects must be short and must not slow the flashcard loop.
 
 Correct:
+
 - damage popup
 - enemy hit reaction
 - HP bar decrease
 
 Combo:
+
 - persistent combo display
 - stronger feedback at x3, x5, x10
 - x10 may show `MAX COMBO`
 
 Speed:
+
 - brief `FAST!` indicator when bonus is awarded
 
 Critical:
+
 - strongest visual feedback
 - large `CRITICAL!`
 - emphasized damage number
@@ -433,9 +748,9 @@ Critical:
 - short screen shake and/or flash
 - lightweight particles/hit effect
 
-Prefer lightweight CSS/animation-library effects suitable for mobile web.
+Prefer lightweight effects suitable for mobile web.
 
-## 18. Daily Goal
+## 22. Daily Goal
 
 Daily Goal:
 
@@ -446,31 +761,40 @@ Do not display a fixed question quota.
 Display progress as enemy defeats.
 
 Example:
+
 `3 / 5 Enemies`
 
-When user defeats the fifth enemy:
-- Daily Goal becomes complete
-- streak is updated
-- award Daily Goal XP
+When user defeats the fifth enemy of the current Asia/Tokyo day:
+
+- mark Daily Goal complete
+- update streak exactly once
+- award Daily Goal XP exactly once
 - show a lightweight completion state
 - user can choose Continue or Finish
 
 Do not force session end.
 
-## 19. Streak
+Daily Goal processing must be idempotent for each user/JST date.
+
+## 23. Streak
 
 A day counts toward streak only when Daily Goal is completed.
 
 Simply:
+
 - opening the app
 - answering one card
 - starting a session
 
 must not preserve the streak.
 
-Use `Asia/Tokyo` day boundaries for MVP.
+Use:
 
-## 20. XP
+`Asia/Tokyo`
+
+for MVP day boundaries.
+
+## 24. XP ledger and current XP
 
 Initial values:
 
@@ -481,14 +805,24 @@ Initial values:
 - Daily Goal Complete: +30 XP
 
 No direct XP for:
+
 - Wrong
 - combo
 - speed bonus
 - critical
 
-Keep every XP value in a central configuration file/module.
+Maintain:
 
-## 21. Level
+- current cumulative XP in profile state
+- append-only XP history in XP event ledger
+
+XP generated from an answer must be idempotent.
+
+Do not double-award XP because of network retry/double tap.
+
+Keep every XP value in a central configuration module.
+
+## 25. Level
 
 Initial formula for XP required for next level:
 
@@ -505,13 +839,14 @@ No MVP level cap is required.
 
 Keep progression constants configurable.
 
-## 22. Leaderboard
+## 26. Leaderboard
 
 Leaderboard metric:
 
 **Enemies Defeated**
 
 Provide:
+
 - Weekly
 - All-time
 
@@ -532,7 +867,19 @@ Example:
 
 Display nickname, not tester ID.
 
-## 23. Home
+Do not create a dedicated leaderboard table in MVP.
+
+Derive:
+
+- weekly ranking from daily user stats
+- all-time ranking from profile lifetime enemy total
+
+Exclude:
+
+- admin
+- any account marked excluded from analytics
+
+## 27. Home
 
 Keep Home visually simple.
 
@@ -541,6 +888,7 @@ Use the supplied concept image as layout inspiration, not as pixel-perfect speci
 Initial information hierarchy:
 
 Top:
+
 - avatar
 - nickname
 - streak
@@ -548,41 +896,50 @@ Top:
 - XP progress
 
 Center:
+
 - character / visual
 - large `START SESSION` CTA
 
 Below:
+
 - learning progress
 - selected deck
 - Daily Goal progress
 
 Bottom navigation:
+
 - Home
 - Dictionary
 - Stats
 
 Do not overcrowd Home with detailed analytics or leaderboard.
 
-## 24. Dictionary
+If an unfinished active session exists, Home/entry flow should clearly offer Resume or Finish.
+
+## 28. Dictionary
 
 Support:
-- list cards
+
+- list user-owned cards
 - filter by card status
 - add card
 - edit card
-- delete card
+- soft-delete card
 
-Users may add personal cards directly into existing decks.
+Users may add personal cards directly into user-owned deck copies.
 
 New user-created card:
-- belongs to selected target deck
+
+- belongs to selected target user-owned deck
 - starts as `NEW`
 
 MVP manual card fields:
+
 - English front
 - Japanese back
 
 Future:
+
 - English input
 - AI suggests Japanese meanings
 - user selects/edits suggestion
@@ -590,42 +947,51 @@ Future:
 
 Do not implement AI card generation in MVP.
 
-## 25. Stats
+## 29. Stats
 
 Initial Stats sections:
 
 ### Study
+
 - Total Study Time
 - Total Sessions
 - Total Answers
 
 ### Knowledge
+
 - Learned
 - Learning
 - New
 
 ### Performance
+
 - Accuracy
 - Longest Combo
 - Average Response Time
 
 ### Battle
+
 - Enemies Defeated
 - Critical Hits
 - Weekly Rank
 - All-time Rank
 
 ### Consistency
+
 - Current Streak
 - Longest Streak
 
 ### Progression
+
 - Level
 - Total XP
 
-## 26. Admin
+Do not unnecessarily duplicate derived stats in profile storage if they can be calculated reliably from the database model.
+
+## 30. Admin
 
 Admin route:
+
 `/admin`
 
 Admin-only.
@@ -633,6 +999,7 @@ Admin-only.
 Minimum features:
 
 ### Overview
+
 - active users
 - total sessions
 - total answers
@@ -640,6 +1007,7 @@ Minimum features:
 - average accuracy
 
 ### User list
+
 - tester ID
 - nickname
 - last active
@@ -651,6 +1019,7 @@ Minimum features:
 - level
 
 ### User detail
+
 - session history
 - answer history
 - card progress
@@ -659,13 +1028,51 @@ Minimum features:
 - review behavior
 
 ### Export
+
 Provide practical CSV export for beta analysis.
 
 Prioritize data accessibility over fancy admin visuals.
 
-## 27. Beta analytics
+Admin must not have unrestricted arbitrary edit access to append-only raw learner history.
 
-Track enough raw events to compute:
+Explicit recovery/admin actions should use designed trusted flows.
+
+Admin preview/testing must not write learner history.
+
+## 31. Analytics data model
+
+Use three conceptual layers:
+
+### Current state
+
+Examples:
+
+- profile state
+- user-card progress
+- active/completed sessions
+
+### Append-only raw history
+
+Examples:
+
+- answer events
+- XP events
+
+### Aggregate/cache
+
+Example:
+
+- daily user stats
+
+Raw history is the authoritative audit trail for beta analysis.
+
+Use Asia/Tokyo for day-based aggregates.
+
+D1 / D3 / D7 return should be based on the user's first real **Start Session** activity, not account creation.
+
+## 32. Beta analytics
+
+Track enough data to compute:
 
 - First Enemy Completion
 - D1 Return
@@ -686,14 +1093,21 @@ Track enough raw events to compute:
 - XP gained
 - Levels reached
 
-## 28. Beta structure
+All beta-success analytics must exclude:
+
+- admin accounts
+- accounts marked excluded from analytics
+
+## 33. Beta structure
 
 ### Alpha
+
 - 5 users
 - 3–5 days
 - objective: bugs, usability, data integrity
 
 ### Closed Beta
+
 - about 30 users
 - about 14 days
 - expected natural use: roughly 5–15 minutes/day
@@ -713,7 +1127,7 @@ Primary success signals:
 
 Do not treat one small-sample metric as a definitive business-success threshold.
 
-## 29. Out of scope
+## 34. Out of scope
 
 Do not implement in MVP:
 
@@ -741,8 +1155,9 @@ Do not implement in MVP:
 - ML personalization
 - AI-assisted card creation
 - complex Notion-style databases
+- production tags/tag filtering
 
-## 30. Central configuration requirement
+## 35. Central configuration requirement
 
 Create central configuration for all tunable game/learning constants, including at least:
 
@@ -760,84 +1175,136 @@ Create central configuration for all tunable game/learning constants, including 
 - DAILY_GOAL_ENEMIES
 - XP_CORRECT
 - XP_CARD_LEARNED
+- XP_CARD_RELEARNED
 - XP_ENEMY_DEFEATED
 - XP_DAILY_GOAL
 - LEVEL_BASE_XP
 - LEVEL_XP_INCREMENT
+- FSRS request retention / relevant settings
 
 Do not scatter these constants through components.
 
-## 31. Implementation order
+## 36. Database implementation expectations
+
+Read and follow:
+
+`docs/DATABASE_SCHEMA.md`
+
+before implementing persistence.
+
+Requirements include:
+
+- UUID primary keys
+- profiles linked to Supabase Auth
+- RLS on application tables
+- soft delete for decks/cards
+- append-only answer events
+- append-only XP events
+- daily aggregate table
+- no dedicated Active Pool table
+- no dedicated leaderboard table
+- no deck-cards join table for MVP
+- official template -> full duplicate -> independent user copy
+- trusted transactional starter duplication
+- trusted atomic answer submission
+- answer idempotency
+- Daily Goal idempotency
+- admin analytics exclusion
+- efficient due-review / Active Pool indexes
+
+Do not re-invent a conflicting schema in application code.
+
+## 37. Implementation order
 
 Implement incrementally.
 
 Suggested order:
 
 1. Project setup
-2. Git repository hygiene / env example
-3. Supabase schema
-4. Authentication / tester/admin roles
-5. First-login nickname flow
-6. Starter deck seed import
-7. Deck selection
-8. Dictionary / card CRUD
-9. Raw answer event logging
-10. Basic flashcard session
-11. Active Pool logic
-12. Mastery logic
-13. FSRS integration
-14. Review -> learning seamless flow
-15. Basic battle HP/damage
-16. Combo
-17. Speed bonus
-18. Critical
-19. Daily Goal / streak
-20. XP / level
-21. Stats
-22. Leaderboard
-23. Admin dashboard / CSV export
-24. Mobile polish
-25. Alpha QA
+2. Git repository hygiene / `.env.example`
+3. Read and validate `DATABASE_SCHEMA.md`
+4. Supabase migrations: core tables
+5. RLS and helper functions
+6. Authentication / tester-admin roles
+7. Official starter deck seed import
+8. Transactional starter-deck duplication
+9. First-login nickname / onboarding flow
+10. Deck selection
+11. Dictionary / card CRUD with soft deletion
+12. Session create/resume/finish
+13. Review queue persistence
+14. Learning queue persistence
+15. Raw answer event + idempotent atomic `submit_answer`
+16. Active Pool selection logic
+17. Mastery / FORGOTTEN lifecycle logic
+18. FSRS integration
+19. Review -> learning seamless flow
+20. Basic battle HP/damage
+21. Combo
+22. Speed bonus
+23. Critical
+24. Daily Goal / streak
+25. XP ledger / level
+26. Stats
+27. Leaderboard
+28. Admin dashboard / CSV export
+29. Mobile polish
+30. Alpha QA / data-integrity tests
 
 After each stable milestone:
-- test the feature
-- verify database writes
-- commit to Git
 
-## 32. Acceptance criteria
+- run migrations
+- verify schema
+- verify RLS
+- verify relevant writes
+- run build/tests
+- inspect diff
+- commit
+
+## 38. Acceptance criteria
 
 A tester can:
 
-1. Open the private web app
-2. Log in with assigned ID/password
-3. Stay signed in across normal return visits
-4. Choose nickname on first login
-5. Choose a starter deck
-6. See Home
-7. Tap Start Session
-8. Complete due reviews from selected deck if any
-9. Seamlessly continue into learning cards
-10. Recall a front card
-11. Reveal the Japanese answer
-12. Mark Correct or Wrong
-13. Generate correct raw answer-event data
-14. Damage enemy on Correct
-15. Reset combo and deal zero damage on Wrong
-16. Experience combo/speed/critical effects
-17. Defeat enemies and spawn new ones
-18. Complete Daily Goal at 5 enemies
-19. Continue after Daily Goal if desired
-20. Earn XP and levels
-21. Earn streak only after Daily Goal
-22. Progress cards through NEW/LEARNING/LEARNED/FORGOTTEN correctly
-23. Receive FSRS review dates
-24. Return a twice-failed review card to FORGOTTEN without deleting its FSRS history
-25. Add/edit/delete cards inside an existing deck
-26. View Stats
-27. View weekly and all-time leaderboard
-28. Admin can inspect tester data and export useful CSV data
+1. open the private web app
+2. log in with assigned ID/password
+3. stay signed in across normal return visits
+4. choose nickname on first login
+5. choose an official starter deck
+6. receive one independent user-owned deck copy
+7. receive 100 independent card copies and NEW learning-progress records
+8. see Home
+9. tap Start Session
+10. complete due reviews from the selected deck if any
+11. seamlessly continue into learning cards
+12. recall a front card
+13. reveal the Japanese answer
+14. mark Correct or Wrong
+15. create one correct append-only raw answer event
+16. safely retry an answer without double-processing it
+17. damage enemy on Correct
+18. reset combo and deal zero damage on Wrong
+19. experience combo/speed/critical effects
+20. defeat enemies and spawn new ones
+21. complete Daily Goal at 5 enemies
+22. avoid duplicate Daily Goal XP/streak awards
+23. continue after Daily Goal if desired
+24. earn XP and levels without duplicate awards
+25. earn streak only after Daily Goal
+26. progress cards through NEW/LEARNING/LEARNED/FORGOTTEN correctly
+27. receive FSRS review dates
+28. return a twice-failed review card to FORGOTTEN without deleting its FSRS history
+29. enforce correct Learning cooldown / forced reappearance
+30. close the app mid-session and later Resume with battle/queue state preserved
+31. avoid creating an answer event for a card that was visible but unanswered at close
+32. add/edit/soft-delete cards inside a user-owned deck
+33. never alter the official template when editing a user copy
+34. view Stats
+35. view weekly and all-time leaderboard
+36. prevent a tester from reading another tester's private data
+37. exclude admin/test-excluded accounts from analytics and leaderboard
+38. allow admin to inspect tester data and export useful CSV data
 
-## 33. Important design principle
+## 39. Important design principle
 
 The user should not need to think about:
 
@@ -845,9 +1312,11 @@ The user should not need to think about:
 - FSRS
 - Again/Hard/Good/Easy
 - multiple session types
+- queue mechanics
+- Active Pool implementation
 
 The intended experience is:
 
 > Choose a deck, press Start Session, fight enemies, and let the app decide what you should study next.
 
-The complex memory system should remain mostly invisible behind a simple game loop.
+The complex memory, queue, transaction, and analytics systems should remain mostly invisible behind a simple game loop.
