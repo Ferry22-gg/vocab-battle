@@ -1390,56 +1390,24 @@ Tester may create/update/soft-delete cards only inside owned decks.
 
 Tester may not modify official template cards.
 
-### `user_card_progress`
+### Trusted-state tables (`user_card_progress`, `sessions`, `session_review_cards`, `session_learning_queue`, `answer_events`, `daily_user_stats`, `xp_events`)
 
-Tester/application may create/update only the tester's own rows.
+These seven tables are **SELECT-only for the `authenticated` Postgres role** (tester and admin alike): no direct `INSERT`/`UPDATE`/`DELETE` grant exists on them at all. This is stricter than "tester may write own rows" -- ownership scoping alone is not enough, because every state change here is one step of a larger atomic, multi-table operation (see section 10), and letting the client issue arbitrary partial writes would break that atomicity and the append-only/idempotency guarantees.
 
-Hard delete is not part of normal product behavior.
+All mutation of these tables happens exclusively through trusted database/application workflows:
 
-### `sessions`
+- `duplicate_starter_deck()` -- creates the initial `user_card_progress` rows for a newly duplicated deck
+- `start_or_resume_session()` -- creates/resumes `sessions` rows and seeds the fixed review queue in `session_review_cards`
+- `finish_session()` -- completes the caller's own `sessions` row
+- `commit_answer_transaction()` -- the only writer of `answer_events` and `xp_events`, and the primary writer of `user_card_progress`, `session_review_cards`, `session_learning_queue`, and `daily_user_stats` per answer
 
-Tester/application may create/update only own sessions.
+See section 10 for the full workflow definitions.
 
-Hard delete is not part of normal product behavior.
+`answer_events` and `xp_events` remain append-only in the stricter sense too: no policy or grant permits `UPDATE`/`DELETE` on them under any circumstance, including for admin.
 
-### `answer_events`
+Hard delete is not part of normal product behavior for any of the seven.
 
-Append-only.
-
-Tester/application may insert own answer events through trusted answer-submission logic.
-
-Normal users may not:
-
-- UPDATE
-- DELETE
-
-answer events.
-
-### `daily_user_stats`
-
-Application may create/update the user's own daily aggregate row.
-
-Hard delete is not normal product behavior.
-
-### `session_review_cards`
-
-Application may create/update rows only for the caller's own session.
-
-Deletion occurs only through session hard-delete cascade, which is not normal product behavior.
-
-### `session_learning_queue`
-
-Same policy as review queue.
-
-### `xp_events`
-
-Append-only.
-
-Normal users do not directly insert/update/delete XP events.
-
-XP events are created by trusted transaction logic.
-
-Admin adjustments must go through explicit admin logic.
+Admin XP adjustments (`xp_events.reason = 'admin_adjustment'`, which also affects `daily_user_stats.xp_gained`) must go through explicit admin logic, not a direct write -- admin has no broader write access to these tables than tester.
 
 ---
 
@@ -1628,6 +1596,8 @@ Purpose:
 
 Create an independent user-owned copy of an official starter deck.
 
+Caller: `authenticated` (a direct Postgres RPC callable by the signed-in tester). Derives the acting user from `auth.uid()` internally -- see section 10.6.
+
 ### Required behavior
 
 Within one transaction:
@@ -1656,15 +1626,99 @@ rollback everything
 
 Do not trust a client-supplied user UUID.
 
-Resolve the authenticated user from Supabase Auth.
+Resolve the authenticated user from Supabase Auth (`auth.uid()`), never from a request parameter.
 
 ---
 
-## 10.2 `submit_answer()`
+## 10.2 Session workflows: `start_or_resume_session()` and `finish_session()`
+
+`sessions`, along with `session_review_cards` and `session_learning_queue`, is SELECT-only for `authenticated` (section 7.2): the client cannot INSERT/UPDATE a session row directly. Starting, resuming, and completing a session are each a trusted workflow instead.
+
+### `start_or_resume_session()`
 
 Purpose:
 
-Process one Correct/Wrong answer as one atomic operation.
+Start a new session, or resume the caller's existing unfinished one, as one atomic operation.
+
+Caller: `authenticated`. Derives the acting user from `auth.uid()` internally -- see section 10.6.
+
+Within one transaction:
+
+1. validate authenticated active tester
+2. resolve the acting user from `auth.uid()`, never from client input
+3. look for an existing `sessions` row for this user with `status = 'active'`
+4. if one exists:
+   - resume it per the Resume behavior in section 4.5 (current enemy, HP, combo, session XP, enemy count, Daily Goal progress, learning draw index)
+   - do not restore the card that was visible but unanswered at last close (section 4.5)
+   - return it
+5. otherwise:
+   - validate the requested deck belongs to the caller (or is a valid selected deck)
+   - insert a new `sessions` row (`status = 'active'`, `current_mode`, `started_with_reviews`, etc.)
+   - determine the review queue for this session (cards currently due) and insert the fixed set of `session_review_cards` rows per section 4.6 -- this queue is not touched again after this point even if more cards become due mid-session
+   - return the new session
+6. commit
+
+On any failure:
+
+```text
+rollback everything
+```
+
+### `finish_session()`
+
+Purpose:
+
+Safely complete the caller's own active session.
+
+Caller: `authenticated`. Trusted workflow scoped to the caller's own session -- validates `sessions.user_id = auth.uid()` before mutating anything; see section 10.6.
+
+Within one transaction:
+
+1. validate authenticated active tester
+2. validate the target session belongs to the caller and is `status = 'active'`
+3. set `status = 'completed'`, `ended_at = now()`, and `end_reason`
+4. commit
+
+On any failure:
+
+```text
+rollback everything
+```
+
+---
+
+## 10.3 Answer submission architecture
+
+Purpose:
+
+Process one Correct/Wrong answer as one atomic operation, without reimplementing FSRS or the rating estimator inside Postgres.
+
+### Layered architecture
+
+```text
+Browser
+  -> trusted Next.js server-side submitAnswer()
+  -> rating estimator + ts-fsrs + battle/XP calculations, in TypeScript
+  -> commit_answer_transaction() Postgres RPC
+  -> atomic persistence
+```
+
+The internal FSRS rating estimator (section 16 of `MVP_SPEC_FOR_CLAUDE.md`) and `ts-fsrs` itself (section 11.4) run in the trusted Next.js server-side `submitAnswer()` function, in TypeScript, before the database is touched. **Postgres must not reimplement FSRS or the rating estimator.** `commit_answer_transaction()` receives already-computed values (FSRS rating, updated FSRS state/due date, battle result) and is responsible only for atomic, idempotent persistence of those values -- not for deriving them.
+
+### `commit_answer_transaction()`
+
+Purpose:
+
+Atomically persist the result of one already-computed answer as one Postgres transaction.
+
+Security (see also section 10.6):
+
+- **not** executable by `PUBLIC`, `anon`, or `authenticated` -- no `EXECUTE` grant exists for any of those roles
+- intended only for a future server-only privileged caller (the trusted Next.js server-side runtime, invoked through a dedicated, minimally-privileged execution path -- not the end user's own `authenticated` session)
+- accepts the target user id as an explicit parameter supplied by that trusted server path, since it does not run inside the end user's own authenticated Postgres session and therefore cannot derive the user from `auth.uid()`
+- independently re-verifies, inside the function body, that the supplied session belongs to the supplied user and is `active`, that the card belongs to the session's deck/current flow, and that the user's `user_card_progress` row for that card belongs to the same user -- ownership is never assumed just because the caller is privileged
+- preserves `client_event_id` idempotency (`answer_events.client_event_id` is UNIQUE; a retried event returns the existing result rather than reprocessing)
+- rolls back the entire transaction on any failure
 
 ### Idempotency
 
@@ -1674,7 +1728,7 @@ Client generates:
 client_event_id UUID
 ```
 
-per answer.
+per answer, passed through the whole chain (`submitAnswer()` -> `commit_answer_transaction()`).
 
 `answer_events.client_event_id` is UNIQUE.
 
@@ -1688,31 +1742,28 @@ do not process it twice.
 
 Return the already-processed result where practical.
 
-### Required transaction flow
+### Required transaction flow (`commit_answer_transaction()`)
 
 Within one transaction:
 
-1. validate authenticated active tester
+1. validate the supplied session belongs to the supplied user and is `active`
 2. reject admin preview from production learner persistence
-3. validate session belongs to user and is `active`
-4. validate card belongs to the session deck / valid current flow
-5. check `client_event_id`
-6. if already processed:
+3. validate card belongs to the session deck / valid current flow
+4. check `client_event_id`
+5. if already processed:
    - return existing result
-7. capture pre-answer state
-8. determine Correct/Wrong effects
-9. update:
+6. capture pre-answer state
+7. persist the Correct/Wrong effects already determined upstream:
    - seen count
    - correct/wrong streaks
    - last answer
    - last seen
-10. apply Mastery / Forgotten lifecycle rules
-11. estimate internal FSRS rating
-12. update FSRS state/due date when applicable
-13. update either:
+8. apply Mastery / Forgotten lifecycle rules
+9. persist the FSRS rating and updated FSRS state/due date computed upstream by `ts-fsrs` (do not compute them here)
+10. update either:
    - `session_review_cards`
    - or `session_learning_queue`
-14. calculate battle:
+11. persist the battle result computed upstream:
    - base damage
    - speed bonus
    - combo
@@ -1720,19 +1771,19 @@ Within one transaction:
    - final damage
    - enemy HP
    - enemy defeat / respawn
-15. insert `answer_events`
-16. update session aggregates/state
-17. update daily aggregate state
-18. insert XP events as applicable
-19. update `profiles.total_xp`
-20. update level
-21. if Daily Goal becomes complete:
+12. insert `answer_events`
+13. update session aggregates/state
+14. update daily aggregate state
+15. insert XP events as applicable
+16. update `profiles.total_xp`
+17. update level
+18. if Daily Goal becomes complete:
    - mark Daily Goal complete exactly once
    - award Daily Goal XP exactly once
    - update streak exactly once
    - update `last_daily_goal_completed_on`
    - update `longest_streak` if needed
-22. commit
+19. commit
 
 On any failure:
 
@@ -1742,7 +1793,7 @@ rollback everything
 
 ---
 
-## 10.3 XP idempotency
+## 10.4 XP idempotency
 
 For XP generated by an answer:
 
@@ -1763,7 +1814,7 @@ may each exist once.
 
 ---
 
-## 10.4 Daily Goal idempotency
+## 10.5 Daily Goal idempotency
 
 Daily Goal completion is based on Asia/Tokyo day boundaries.
 
@@ -1786,6 +1837,17 @@ Daily Goal target:
 ```text
 5 enemies
 ```
+
+---
+
+## 10.6 `SECURITY DEFINER` requirements
+
+Every trusted database function above (`is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, `commit_answer_transaction()`) that needs to read or write beyond what the calling role's own RLS policies allow must be defined `SECURITY DEFINER`, and each one must satisfy all of the following:
+
+- **fixed `search_path`**: set `search_path = ''` (or another fixed, non-caller-influenced value) on the function definition, so a lower-privileged role cannot hijack name resolution by creating an object earlier in a mutable search path
+- **schema qualification**: every table, view, and function referenced in the body is schema-qualified (e.g. `public.profiles`, `auth.uid()`), consistent with the fixed `search_path`
+- **independent ownership/authorization checks inside the function body**: a `SECURITY DEFINER` function runs as its owner and therefore bypasses the caller's RLS policies -- it must not rely on RLS to enforce who can do what. Each function re-validates the relevant ownership (session belongs to user, card belongs to deck, progress row belongs to user, etc.) explicitly, using either `auth.uid()` (for functions callable by `authenticated`) or the trusted caller-supplied user id (for `commit_answer_transaction()`, which cannot use `auth.uid()` -- see section 10.3)
+- **minimum `EXECUTE` grants**: `REVOKE ALL` from `PUBLIC` first, then `GRANT EXECUTE` only to the specific role(s) that should be able to call it -- `authenticated` for `is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, and `finish_session()`; no grant to `PUBLIC`, `anon`, or `authenticated` for `commit_answer_transaction()`, whose caller is a future server-only privileged role instead
 
 ---
 
@@ -2009,8 +2071,10 @@ Recommended order:
 14. RLS
 15. starter template seed data
 16. `duplicate_starter_deck()`
-17. `submit_answer()`
-18. integration tests / data-integrity tests
+17. `start_or_resume_session()`
+18. `finish_session()`
+19. `commit_answer_transaction()` (invoked by the trusted Next.js server-side `submitAnswer()`; see section 10.3)
+20. integration tests / data-integrity tests
 
 ---
 
@@ -2027,6 +2091,9 @@ Before considering the schema implementation complete, verify at minimum:
   - 100 independent card copies
   - 100 NEW progress rows
 - re-running starter duplication does not create unintended duplicates
+- `authenticated` has no direct INSERT/UPDATE/DELETE grant on any trusted-state table (section 7.2); all mutation of those tables happens only via `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, and `commit_answer_transaction()`
+- `commit_answer_transaction()` is not executable by `PUBLIC`, `anon`, or `authenticated` -- only by the future trusted server-only caller (section 10.3)
+- FSRS state and the internal rating estimator are computed in the trusted Next.js server-side `submitAnswer()` (TypeScript), never reimplemented in Postgres
 - answer retry with same `client_event_id` does not double-process
 - answer submission is atomic
 - XP cannot be double-awarded for the same answer/reason
