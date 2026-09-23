@@ -726,6 +726,26 @@ INDEX (user_id, status)
 INDEX (user_id, last_active_at)
 ```
 
+### Canonical enemy identifiers
+
+Internal stable identifiers only -- not display names or art labels (those are mapped separately in the TypeScript/UI layer):
+
+| `current_enemy_type` | Initial HP |
+|---|---:|
+| `enemy_a` | 90 |
+| `enemy_b` | 105 |
+| `enemy_c` | 120 |
+
+### Initial enemy and Daily Goal snapshot (new sessions)
+
+When `start_or_resume_session()` (10.2) creates a NEW session, it initializes:
+
+- `current_enemy_type` / `current_enemy_max_hp` / `current_enemy_hp`: one of the three canonical enemies above, chosen uniformly at random, spawned at full HP
+- `daily_goal_progress` = `least(today's daily_user_stats.enemies_defeated, 5)` (Asia/Tokyo), or `0` if no `daily_user_stats` row exists yet today
+- `daily_goal_completed` = today's `daily_user_stats.daily_goal_completed` (Asia/Tokyo), or `false` if no row exists yet today
+
+Starting a second session on a day that already has Daily Goal progress must not reset that progress.
+
 ### Resume behavior
 
 Closing the app does **not** complete the session.
@@ -753,6 +773,8 @@ Resume restores:
 - session enemy count
 - Daily Goal progress
 - learning draw index
+
+A resumed session's enemy and Daily Goal snapshot/state are preserved unchanged -- the initial-enemy/Daily-Goal-snapshot initialization above applies only to a newly created session, never to a resume.
 
 The card that was visible but unanswered at app close is **not restored**.
 
@@ -885,9 +907,15 @@ card_id
 
 ### Behavior
 
-`learning_draw_index` belongs to `sessions` and counts only Learning draws.
+`learning_draw_index` on `sessions` equals the number of successfully committed Learning-mode answers before the current answer. Review answers, replays of an already-processed `client_event_id`, and the unanswered card visible at app close never advance it.
 
-Review cards do not increment it.
+For a new Learning-mode answer:
+
+```text
+current_draw_number = locked sessions.learning_draw_index + 1
+```
+
+`current_draw_number` is used as `N` below.
 
 Correct at Learning draw `N`:
 
@@ -913,11 +941,19 @@ shift the newly scheduled card forward
 until an unreserved position is found
 ```
 
+Collision-shift applies only among Learning-mode forced-reappearance positions in this table -- it is a separate rule from, and never applied to, `session_review_cards`' own reordering (4.6).
+
 Rows are created only when a card is first used in that session.
 
 Do not pre-create rows for the entire Active Pool.
 
 This state survives session interruption/resume.
+
+After a successful commit of a new (non-replay) Learning-mode answer:
+
+```text
+sessions.learning_draw_index = current_draw_number
+```
 
 ---
 
@@ -1653,7 +1689,7 @@ Within one transaction:
    - return it
 5. otherwise:
    - validate the requested deck belongs to the caller (or is a valid selected deck)
-   - insert a new `sessions` row (`status = 'active'`, `current_mode`, `started_with_reviews`, etc.)
+   - insert a new `sessions` row (`status = 'active'`, `current_mode`, `started_with_reviews`, a randomly-chosen initial enemy, and a Daily Goal snapshot per "Initial enemy and Daily Goal snapshot" in section 4.5)
    - determine the review queue for this session (cards currently due) and insert the fixed set of `session_review_cards` rows per section 4.6 -- this queue is not touched again after this point even if more cards become due mid-session
    - return the new session
 6. commit
@@ -1691,7 +1727,7 @@ rollback everything
 
 Purpose:
 
-Process one Correct/Wrong answer as one atomic operation, without reimplementing FSRS or the rating estimator inside Postgres.
+Process one Correct/Wrong answer as one atomic operation, without reimplementing FSRS, the rating estimator, or the battle damage formula inside Postgres.
 
 ### Layered architecture
 
@@ -1699,11 +1735,11 @@ Process one Correct/Wrong answer as one atomic operation, without reimplementing
 Browser
   -> trusted Next.js server-side submitAnswer()
   -> rating estimator + ts-fsrs + battle/XP calculations, in TypeScript
-  -> commit_answer_transaction() Postgres RPC
+  -> commit_answer_transaction() Postgres RPC (service_role)
   -> atomic persistence
 ```
 
-The internal FSRS rating estimator (section 16 of `MVP_SPEC_FOR_CLAUDE.md`) and `ts-fsrs` itself (section 11.4) run in the trusted Next.js server-side `submitAnswer()` function, in TypeScript, before the database is touched. **Postgres must not reimplement FSRS or the rating estimator.** `commit_answer_transaction()` receives already-computed values (FSRS rating, updated FSRS state/due date, battle result) and is responsible only for atomic, idempotent persistence of those values -- not for deriving them.
+The internal FSRS rating estimator (section 16 of `MVP_SPEC_FOR_CLAUDE.md`), `ts-fsrs` itself (section 11.4), and the full battle result (base damage, speed bonus, critical roll, combo-after, final damage, resulting enemy HP, next enemy) are all computed in the trusted Next.js server-side `submitAnswer()` function, in TypeScript, before the database is touched. **Postgres must not reimplement FSRS, the rating estimator, or the battle damage formula.** `commit_answer_transaction()` receives these already-computed values and validates them for structural consistency (see "Battle validation" below) rather than re-deriving them. It does independently recompute the deterministic, concurrency-sensitive state that is fully specified by the product rules: seen_count/streaks, card lifecycle transitions (11.1/11.2), review/learning queue mechanics (4.6/4.7), XP reason/amount, level, and Daily Goal/streak.
 
 ### `commit_answer_transaction()`
 
@@ -1713,14 +1749,14 @@ Atomically persist the result of one already-computed answer as one Postgres tra
 
 Security (see also section 10.6):
 
-- **not** executable by `PUBLIC`, `anon`, or `authenticated` -- no `EXECUTE` grant exists for any of those roles
-- intended only for a future server-only privileged caller (the trusted Next.js server-side runtime, invoked through a dedicated, minimally-privileged execution path -- not the end user's own `authenticated` session)
-- accepts the target user id as an explicit parameter supplied by that trusted server path, since it does not run inside the end user's own authenticated Postgres session and therefore cannot derive the user from `auth.uid()`
+- `REVOKE EXECUTE` from `PUBLIC`, `anon`, and `authenticated`
+- `GRANT EXECUTE` to `service_role` only -- the service-role key exists only in the trusted Next.js server-side environment and must never reach the browser
+- accepts the target user id (`p_user_id`) as an explicit parameter supplied by that trusted server path, since it does not run inside the end user's own authenticated Postgres session and therefore cannot derive the user from `auth.uid()`
 - independently re-verifies, inside the function body, that the supplied session belongs to the supplied user and is `active`, that the card belongs to the session's deck/current flow, and that the user's `user_card_progress` row for that card belongs to the same user -- ownership is never assumed just because the caller is privileged
-- preserves `client_event_id` idempotency (`answer_events.client_event_id` is UNIQUE; a retried event returns the existing result rather than reprocessing)
+- returns `jsonb` (not a row type), so a replay result can be shaped differently from a fresh result (see "Return shape" below)
 - rolls back the entire transaction on any failure
 
-### Idempotency
+### Idempotency and replay
 
 Client generates:
 
@@ -1728,68 +1764,137 @@ Client generates:
 client_event_id UUID
 ```
 
-per answer, passed through the whole chain (`submitAnswer()` -> `commit_answer_transaction()`).
+per answer, passed through the whole chain (`submitAnswer()` -> `commit_answer_transaction()`). `answer_events.client_event_id` is UNIQUE.
 
-`answer_events.client_event_id` is UNIQUE.
+The `client_event_id` lookup happens first -- immediately after locking the caller's profile row, and **before** the active-tester check, session/card/progress validation, queue-eligibility validation, and the stale-snapshot comparison below. This ordering is deliberate: a legitimate delayed retry (double tap, network retry, client retry) must never be rejected just because the original processing already advanced session/progress state, switched session mode, or completed a review card.
 
-If the same event is submitted again because of:
+If `client_event_id` already exists in `answer_events`:
 
-- double tap
-- network retry
-- client retry
+- verify the existing row's `user_id`/`session_id`/`card_id` match the supplied identity parameters (a mismatch means the same `client_event_id` was reused for a different logical answer, which is rejected as an error, not treated as a replay)
+- return the replay result immediately -- the session is **not** required to still be `active`, the review/learning queue row is **not** required to still be currently eligible, and no stale-snapshot comparison is performed
+- the replay result contains only the immutable historical `answer_events` row and its linked `xp_events` -- it never fabricates current-looking `session`/`user_card_progress`/`profile` state for what may be a stale retry (see "Return shape" below)
 
-do not process it twice.
+Only for a genuinely new `client_event_id` does the function proceed to full validation and persistence.
 
-Return the already-processed result where practical.
+### Locking order
+
+Fixed across every call that reaches the "new event" path (a replay never locks past the profile row):
+
+```text
+profiles -> sessions -> user_card_progress -> review/learning queue row -> daily_user_stats
+```
+
+### Stale-snapshot detection (new event only)
+
+The caller supplies a pre-answer snapshot (card status/seen_count/streaks/FSRS-due, session enemy HP/combo, and -- for Learning mode -- `learning_draw_index`) reflecting what it believed to be true when it computed the FSRS rating and battle result. After the relevant rows are locked, this snapshot is compared against the actual locked values using NULL-safe (`IS DISTINCT FROM`) comparisons, so a NULL baseline (e.g. no prior FSRS due date) never breaks the comparison.
+
+Any mismatch means the answer was computed against state that has since changed (e.g. a second device advanced the same session). The function raises with `SQLSTATE 40001` and performs no writes; the trusted caller is expected to refetch current state, recompute the rating/battle result, and resubmit with a fresh `client_event_id`.
 
 ### Required transaction flow (`commit_answer_transaction()`)
 
 Within one transaction:
 
-1. validate the supplied session belongs to the supplied user and is `active`
-2. reject admin preview from production learner persistence
-3. validate card belongs to the session deck / valid current flow
-4. check `client_event_id`
-5. if already processed:
-   - return existing result
-6. capture pre-answer state
-7. persist the Correct/Wrong effects already determined upstream:
-   - seen count
-   - correct/wrong streaks
-   - last answer
-   - last seen
-8. apply Mastery / Forgotten lifecycle rules
-9. persist the FSRS rating and updated FSRS state/due date computed upstream by `ts-fsrs` (do not compute them here)
-10. update either:
-   - `session_review_cards`
-   - or `session_learning_queue`
-11. persist the battle result computed upstream:
-   - base damage
-   - speed bonus
-   - combo
-   - critical
-   - final damage
-   - enemy HP
-   - enemy defeat / respawn
-12. insert `answer_events`
-13. update session aggregates/state
-14. update daily aggregate state
-15. insert XP events as applicable
-16. update `profiles.total_xp`
-17. update level
-18. if Daily Goal becomes complete:
-   - mark Daily Goal complete exactly once
-   - award Daily Goal XP exactly once
-   - update streak exactly once
-   - update `last_daily_goal_completed_on`
-   - update `longest_streak` if needed
-19. commit
+1. lock the caller's `profiles` row
+2. check `client_event_id` against `answer_events`; if found, validate identity and return the replay result immediately (see "Idempotency and replay")
+3. require an active tester account (reject admin preview from production learner persistence)
+4. lock and validate the target `sessions` row (belongs to the caller, `status = 'active'`)
+5. validate the card belongs to the session's deck
+6. lock and validate the target `user_card_progress` row (belongs to the caller)
+7. require `p_session_mode` to equal the locked session's `current_mode`
+8. lock and validate the relevant `session_review_cards` / `session_learning_queue` row -- see "Review-mode validation" and "Learning-mode eligibility" below
+9. lock (creating if absent) today's (Asia/Tokyo) `daily_user_stats` row
+10. compare the pre-answer snapshot against locked state; stale -> `SQLSTATE 40001` (see above)
+11. validate the battle result's structural invariants (see "Battle validation" below)
+12. recompute card lifecycle (seen_count/streaks/status -- 11.1/11.2) and update the review or learning queue (4.6/4.7)
+13. insert `answer_events`
+14. determine XP amounts (Postgres-derived constants only -- see 10.4) and insert applicable `xp_events`
+15. update `daily_user_stats` aggregates, including post-goal-answer bookkeeping (10.5)
+16. apply the Review -> Learning session transition if applicable (see below)
+17. update `sessions` aggregates/state
+18. derive the new level from the updated `total_xp` (see "Level calculation")
+19. apply the Daily Goal/streak transition exactly once if triggered (10.5)
+20. update `profiles`
+21. commit, returning the fresh `jsonb` result
 
 On any failure:
 
 ```text
 rollback everything
 ```
+
+### Review-mode validation
+
+The answered card must be an uncompleted row in `session_review_cards` for this session; otherwise the answer is rejected. See 4.6 for the wrong-count/reposition/FORGOTTEN rules themselves.
+
+### Review -> Learning session transition
+
+After processing a Review-mode answer, if no `session_review_cards` row for the session remains incomplete:
+
+```text
+sessions.current_mode = 'learning'
+sessions.reviews_completed_at = now()
+```
+
+Guarded by `reviews_completed_at IS NULL`, so this happens exactly once per session.
+
+### Learning-mode eligibility
+
+For a new Learning-mode answer:
+
+- `user_card_progress.card_status` must be one of `NEW`, `LEARNING`, `FORGOTTEN` (a `LEARNED` card is never answered in Learning mode)
+- the card must belong to the session's deck
+- if a `session_learning_queue` row already exists for this card and `current_draw_number` (4.7) is still before its `next_eligible_draw_index`, the answer is rejected (still in cooldown)
+- if another card's `forced_reappear_draw_index` equals this `current_draw_number`, the answer is rejected -- that reservation must be respected rather than skipped
+
+See 4.7 for `current_draw_number`, cooldown, forced-reappearance, and collision-shift.
+
+### Battle validation
+
+Postgres does not reimplement the battle damage formula, and does not duplicate TypeScript-config-owned tunables (e.g. base-damage range, speed-bonus range, combo-bonus tiers, critical multiplier). It validates only fixed, stable structural invariants:
+
+```text
+base_damage >= 0, speed_bonus >= 0, damage >= 0
+0 <= combo_after <= 10
+
+Wrong   => damage = 0 AND combo_after = 0 AND critical = false AND enemy HP unchanged
+Correct => combo_after = min(combo_before + 1, 10)
+           enemy_hp_after = greatest(0, enemy_hp_before - damage)
+
+enemy_defeated  <=>  enemy_hp_after = 0
+defeated        =>  new enemy type in (enemy_a, enemy_b, enemy_c), new enemy HP = new enemy max HP > 0
+not defeated    =>  new-enemy fields are NULL
+```
+
+New-enemy HP-by-type is not cross-checked against the canonical HP table in 4.5 -- that mapping stays TypeScript-config-owned so it can change without a migration.
+
+### Level calculation
+
+XP required for the next level starts at 200 and increases by 50 per subsequent level (section 25 of `MVP_SPEC_FOR_CLAUDE.md`). Equivalently, the cumulative XP required to reach level `L`:
+
+```text
+cumulative(L) = 200*(L-1) + 25*(L-1)*(L-2)
+```
+
+`level` is derived from the updated `total_xp` by finding the largest `L` for which `cumulative(L) <= total_xp`.
+
+### Aggregate updates
+
+`commit_answer_transaction()` maintains, in addition to `user_card_progress`, `answer_events`, and `xp_events`:
+
+**`sessions`**: `total_answers`, `correct_answers`, `wrong_answers`, `enemies_defeated`, `longest_combo`, `critical_hits`, `xp_gained`, `daily_goal_progress`, `daily_goal_completed`, `continued_after_daily_goal`, `current_enemy_type`/`current_enemy_max_hp`/`current_enemy_hp`, `current_combo`, `learning_draw_index`, `current_mode`/`reviews_completed_at` (Review -> Learning transition), `last_active_at`.
+
+**`profiles`**: `total_xp`, `level`, `total_enemies_defeated`, `current_streak`, `longest_streak`, `last_daily_goal_completed_on`, `last_active_at`.
+
+**`daily_user_stats`**: `total_answers`, `correct_answers`, `wrong_answers`, `cards_mastered`, `cards_forgotten`, `reviews_completed`, `enemies_defeated`, `critical_hits`, `longest_combo`, `xp_gained`, `daily_goal_completed`, `daily_goal_completed_at`, `continued_after_daily_goal`, `post_goal_answers`, `last_activity_at`.
+
+`sessions.daily_goal_progress`/`daily_goal_completed` are mirrored from the same-transaction `daily_user_stats` update (not tracked independently), so progress stays consistent across multiple sessions on the same day.
+
+### Return shape
+
+`commit_answer_transaction()` returns `jsonb` with an `is_replay` flag:
+
+- fresh result: `is_replay: false`, plus the inserted `answer_event`, the `xp_events` inserted for it, `daily_goal_just_completed`, and current `user_card_progress`/`session`/`profile` (narrow projection: `total_xp`, `level`, `current_streak`, `longest_streak`, `last_daily_goal_completed_on`) snapshots
+- replay result: `is_replay: true`, plus the historical `answer_event` and its linked `xp_events`; `user_card_progress`/`session`/`profile` are `null` -- the caller must not treat a replay as representing current live state, and should refetch separately if needed
 
 ---
 
@@ -1801,16 +1906,17 @@ For XP generated by an answer:
 UNIQUE (source_answer_event_id, reason)
 ```
 
-Examples from one answer:
+Amounts are Postgres-derived constants inside `commit_answer_transaction()` -- never accepted from the caller (section 24 of `MVP_SPEC_FOR_CLAUDE.md`):
 
 ```text
-correct_answer
-card_learned
-enemy_defeated
-daily_goal_completed
+correct_answer        +2   (Correct only)
+card_learned          +15  (first-ever transition into LEARNED)
+card_relearned        +15  (FORGOTTEN -> LEARNED)
+enemy_defeated        +20
+daily_goal_completed  +30  (exactly once per JST day -- see 10.5)
 ```
 
-may each exist once.
+From one answer, each reason may exist at most once (the UNIQUE constraint above is the backstop; `card_learned` and `card_relearned` are mutually exclusive per answer).
 
 ---
 
@@ -1830,13 +1936,31 @@ Use:
 - `daily_user_stats.daily_goal_completed`
 - `profiles.last_daily_goal_completed_on`
 
-as part of the guard.
+as part of the guard. `daily_user_stats.daily_goal_completed` becomes `true` (and `daily_goal_completed_at = now()`) exactly once, the moment that day's `enemies_defeated` first reaches the target while it was previously `false`.
 
 Daily Goal target:
 
 ```text
 5 enemies
 ```
+
+### Streak rule
+
+Evaluated only when this answer is the one that completes the Daily Goal:
+
+```text
+last_daily_goal_completed_on = today      -> no increment (unreachable in practice; guarded above)
+last_daily_goal_completed_on = yesterday  -> current_streak = current_streak + 1
+NULL or earlier than yesterday            -> current_streak = 1
+
+longest_streak = greatest(longest_streak, new current_streak)
+```
+
+### Post-goal continuation
+
+- the answer that completes the Daily Goal does **not** itself count as a post-goal answer
+- every later answer submitted that day (evaluated against the pre-this-answer value of `daily_goal_completed`) increments `daily_user_stats.post_goal_answers`
+- the first such later answer sets `daily_user_stats.continued_after_daily_goal = true` (and `sessions.continued_after_daily_goal = true` on the session it was submitted in); both flags are monotonic (`OR`) thereafter
 
 ---
 
@@ -1847,7 +1971,7 @@ Every trusted database function above (`is_admin()`, `duplicate_starter_deck()`,
 - **fixed `search_path`**: set `search_path = ''` (or another fixed, non-caller-influenced value) on the function definition, so a lower-privileged role cannot hijack name resolution by creating an object earlier in a mutable search path
 - **schema qualification**: every table, view, and function referenced in the body is schema-qualified (e.g. `public.profiles`, `auth.uid()`), consistent with the fixed `search_path`
 - **independent ownership/authorization checks inside the function body**: a `SECURITY DEFINER` function runs as its owner and therefore bypasses the caller's RLS policies -- it must not rely on RLS to enforce who can do what. Each function re-validates the relevant ownership (session belongs to user, card belongs to deck, progress row belongs to user, etc.) explicitly, using either `auth.uid()` (for functions callable by `authenticated`) or the trusted caller-supplied user id (for `commit_answer_transaction()`, which cannot use `auth.uid()` -- see section 10.3)
-- **minimum `EXECUTE` grants**: `REVOKE ALL` from `PUBLIC` first, then `GRANT EXECUTE` only to the specific role(s) that should be able to call it -- `authenticated` for `is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, and `finish_session()`; no grant to `PUBLIC`, `anon`, or `authenticated` for `commit_answer_transaction()`, whose caller is a future server-only privileged role instead
+- **minimum `EXECUTE` grants**: `REVOKE ALL` from `PUBLIC` first, then `GRANT EXECUTE` only to the specific role(s) that should be able to call it -- `authenticated` for `is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, and `finish_session()`; no grant to `PUBLIC`, `anon`, or `authenticated` for `commit_answer_transaction()` -- `EXECUTE` is granted to `service_role` only, whose key exists solely in the trusted Next.js server-side environment and must never reach the browser
 
 ---
 
@@ -1861,6 +1985,19 @@ AND
 seen_count >= 5
 → LEARNED
 ```
+
+### Exact card lifecycle
+
+```text
+NEW        → LEARNING   (after first answered exposure, unless mastered on that exposure)
+LEARNING   → LEARNED    (on mastery)
+LEARNED    → LEARNED    (first Wrong within a Review portion -- see 11.2)
+LEARNED    → FORGOTTEN  (second Wrong within the same Review portion -- see 11.2)
+FORGOTTEN  → FORGOTTEN  (remains FORGOTTEN while being relearned)
+FORGOTTEN  → LEARNED    (on re-mastery)
+```
+
+`FORGOTTEN` never converts to `LEARNING` during relearning -- it stays `FORGOTTEN` until it re-masters directly to `LEARNED`.
 
 ---
 
@@ -1892,22 +2029,38 @@ and retention continues from accumulated FSRS history.
 
 ## 11.3 Learning cooldown
 
-Correct:
+```text
+current_draw_number = locked sessions.learning_draw_index + 1
+```
+
+`current_draw_number` is used as `N` below.
+
+Correct at draw `N`:
 
 ```text
 cannot appear in next 10 Learning draws
+next_eligible_draw_index = N + 11
 ```
 
-Wrong:
+Wrong at draw `N`:
 
 ```text
 must reappear 6–9 Learning draws later
+forced_reappear_draw_index = N + random integer 6..9
 ```
 
 If forced positions collide:
 
 ```text
 later reservation shifts forward until free
+```
+
+Collision-shift applies only among Learning-mode forced-reappearance positions -- it is a separate rule from, and never applied to, the Review queue's own reordering (4.6).
+
+After a successful commit of a new (non-replay) Learning-mode answer:
+
+```text
+sessions.learning_draw_index = current_draw_number
 ```
 
 ---
@@ -2048,6 +2201,10 @@ Do not commit:
 - `.env.local`
 - database passwords
 - Supabase secret/service-role keys
+
+### Migration immutability
+
+Existing committed migration files are historical records of what was actually applied and must not be edited after being committed. A later behavioral change (e.g. `CREATE OR REPLACE FUNCTION`) is added through a new migration file instead.
 
 ---
 
