@@ -1265,7 +1265,7 @@ On first onboarding:
 
 Only the selected starter deck is duplicated during first onboarding.
 
-The other starter deck remains available to add later.
+The other starter deck remains available to add later -- calling `duplicate_starter_deck()` (10.1) again for that template both duplicates it and selects it, and is idempotent if the tester already owns a copy (it re-selects the existing copy instead of duplicating again). Switching `selected_deck_id` back to a deck the tester already owns, without touching `decks`/`cards` at all, uses `select_deck()` (10.8).
 
 After duplication, changes to the user's deck/cards do not affect:
 
@@ -1355,7 +1355,9 @@ Admin may:
 
 Admin must **not** have unrestricted edit access to raw learner history.
 
-Admin may preview/test learner UI, but preview mode must not persist beta learner records.
+Admin must not call any tester-facing learner-write RPC to persist content or state -- `duplicate_starter_deck()`, `add_card_to_deck()`, `select_deck()`, `start_or_resume_session()`, `finish_session()`, and `commit_answer_transaction()` (10.1-10.3, 10.7, 10.8) each independently require an active `role = 'tester'` caller and reject an admin caller outright, regardless of the RLS policies that would otherwise let admin read the underlying tables.
+
+Admin may preview/test learner UI, but preview mode must not persist beta learner records. Admin Preview is implemented entirely at the application layer as a client-side, non-persistent simulation -- it never calls the learner-write RPCs listed above.
 
 ---
 
@@ -1400,7 +1402,7 @@ Admin may read all beta data required by `/admin`.
 
 ### `profiles`
 
-Tester may update only explicitly permitted self-editable profile fields, such as nickname.
+Tester may update only explicitly permitted self-editable profile fields via direct column grant: `nickname` only.
 
 Do not allow testers to directly modify:
 
@@ -1410,21 +1412,67 @@ Do not allow testers to directly modify:
 - total_xp
 - level
 - streak fields
+- `selected_deck_id`
 - analytics/control fields
 
-Those are changed through trusted application/admin logic.
+Those are changed through trusted application/admin logic. `selected_deck_id` specifically is changed only by `duplicate_starter_deck()` (10.1) or `select_deck()` (10.8) -- never by a direct `UPDATE`.
 
 ### `decks`
 
-Tester may create/update/soft-delete only owned decks.
+Tester deck **creation** is not a direct write. `authenticated` has **no `INSERT` grant** on `decks` at all -- the only way a tester acquires a deck is `duplicate_starter_deck()` (10.1) duplicating an official template. Custom, from-scratch deck creation is **not implemented in the MVP**.
 
-Tester may not modify official template decks.
+Tester deck **update** is scoped to owned decks and column-restricted by grant, not just by RLS. `authenticated` may directly `UPDATE` only:
+
+- `name`
+- `description`
+- `sort_order`
+- `archived_at`
+- `deleted_at`
+
+`authenticated` may not directly update, and has no column grant for:
+
+- `id`
+- `owner_user_id`
+- `source_deck_id`
+- `is_template`
+- `is_official`
+- `front_language`
+- `back_language`
+- `created_at`
+- `updated_at`
+
+A direct `UPDATE` naming any of those columns is rejected before RLS is evaluated. RLS ownership (`owner_user_id = auth.uid()`) still applies on top of this to whichever safe columns a statement does touch.
+
+Tester may not modify official template decks (`owner_user_id` is `NULL` for those, so RLS ownership already excludes them).
+
+`authenticated` has no `DELETE` grant on `decks`. Removal from a tester's library is `deleted_at` (soft delete, within the allowed column list above), never a hard delete.
 
 ### `cards`
 
-Tester may create/update/soft-delete cards only inside owned decks.
+Tester card **creation** is not a direct write either. `authenticated` has **no `INSERT` grant** on `cards`. A tester adds a personal card to one of their own decks only through `add_card_to_deck()` (10.7), which atomically creates both the `cards` row and its matching `NEW` `user_card_progress` row -- something a bare `INSERT` on `cards` cannot guarantee, and exactly why a direct `INSERT` grant is not offered.
 
-Tester may not modify official template cards.
+Tester card **update** is scoped to cards inside owned decks (ownership checked through the parent deck, since `cards` has no `owner_user_id` of its own) and column-restricted by grant. `authenticated` may directly `UPDATE` only:
+
+- `front`
+- `back`
+- `extra_content`
+- `sort_order`
+- `deleted_at`
+
+`authenticated` may not directly update, and has no column grant for:
+
+- `id`
+- `deck_id`
+- `created_by_user_id`
+- `source_card_id`
+- `created_at`
+- `updated_at`
+
+A direct `UPDATE` naming any of those columns is rejected before RLS is evaluated -- lineage fields (`created_by_user_id`, `source_card_id`) in particular can never be rewritten by a tester once a card exists.
+
+Tester may not modify official template cards (they belong to a deck with `owner_user_id IS NULL`, so RLS ownership already excludes them).
+
+`authenticated` has no `DELETE` grant on `cards`. Removal from a tester's deck is `deleted_at` (soft delete, within the allowed column list above), never a hard delete.
 
 ### Trusted-state tables (`user_card_progress`, `sessions`, `session_review_cards`, `session_learning_queue`, `answer_events`, `daily_user_stats`, `xp_events`)
 
@@ -1966,12 +2014,78 @@ longest_streak = greatest(longest_streak, new current_streak)
 
 ## 10.6 `SECURITY DEFINER` requirements
 
-Every trusted database function above (`is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, `commit_answer_transaction()`) that needs to read or write beyond what the calling role's own RLS policies allow must be defined `SECURITY DEFINER`, and each one must satisfy all of the following:
+Every trusted `SECURITY DEFINER` function in this document (`is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, `commit_answer_transaction()`, `add_card_to_deck()` (10.7), `select_deck()` (10.8)) that needs to read or write beyond what the calling role's own RLS policies allow must be defined `SECURITY DEFINER`, and each one must satisfy all of the following:
 
 - **fixed `search_path`**: set `search_path = ''` (or another fixed, non-caller-influenced value) on the function definition, so a lower-privileged role cannot hijack name resolution by creating an object earlier in a mutable search path
 - **schema qualification**: every table, view, and function referenced in the body is schema-qualified (e.g. `public.profiles`, `auth.uid()`), consistent with the fixed `search_path`
 - **independent ownership/authorization checks inside the function body**: a `SECURITY DEFINER` function runs as its owner and therefore bypasses the caller's RLS policies -- it must not rely on RLS to enforce who can do what. Each function re-validates the relevant ownership (session belongs to user, card belongs to deck, progress row belongs to user, etc.) explicitly, using either `auth.uid()` (for functions callable by `authenticated`) or the trusted caller-supplied user id (for `commit_answer_transaction()`, which cannot use `auth.uid()` -- see section 10.3)
-- **minimum `EXECUTE` grants**: `REVOKE ALL` from `PUBLIC` first, then `GRANT EXECUTE` only to the specific role(s) that should be able to call it -- `authenticated` for `is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, and `finish_session()`; no grant to `PUBLIC`, `anon`, or `authenticated` for `commit_answer_transaction()` -- `EXECUTE` is granted to `service_role` only, whose key exists solely in the trusted Next.js server-side environment and must never reach the browser
+- **minimum `EXECUTE` grants**: `REVOKE ALL` from `PUBLIC` first, then `GRANT EXECUTE` only to the specific role(s) that should be able to call it -- `authenticated` for `is_admin()`, `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, `add_card_to_deck()`, and `select_deck()`; no grant to `PUBLIC`, `anon`, or `authenticated` for `commit_answer_transaction()` -- `EXECUTE` is granted to `service_role` only, whose key exists solely in the trusted Next.js server-side environment and must never reach the browser
+
+---
+
+## 10.7 `add_card_to_deck()`
+
+Purpose:
+
+Let a tester add a personally-authored card to one of their own duplicated decks, since `authenticated` has no direct `INSERT` grant on `cards` (7.2) -- direct insertion could not guarantee the matching `user_card_progress` row required below.
+
+Caller: `authenticated`. Derives the acting user from `auth.uid()` internally -- see section 10.6.
+
+### Required behavior
+
+Within one transaction:
+
+1. validate authenticated active tester (`account_status = 'active' AND role = 'tester'`) -- admin is rejected
+2. validate the target deck belongs to the caller (`owner_user_id = auth.uid()`)
+3. validate the target deck is not archived (`archived_at IS NULL`) and not deleted (`deleted_at IS NULL`)
+4. insert the card:
+   - `created_by_user_id = caller`
+   - `source_card_id = NULL` (personally authored, no official lineage)
+5. insert the matching `user_card_progress` row for the caller:
+   - `card_status = 'NEW'`
+   - `seen_count = 0`, `correct_streak = 0`, `wrong_streak = 0`
+   - FSRS fields left at column defaults (unset/zero, per 4.4)
+6. return the created card
+7. commit
+
+On any failure:
+
+```text
+rollback everything
+```
+
+The card row and its `user_card_progress` row are created in the same function invocation and are therefore atomic with each other: a card can never exist without its progress row, or vice versa.
+
+Do not trust a client-supplied user UUID or deck ownership claim -- both are re-derived/re-validated from `auth.uid()` and the locked `decks` row inside the function body, independent of RLS (10.6).
+
+---
+
+## 10.8 `select_deck()`
+
+Purpose:
+
+Let a tester change which of their own decks is `profiles.selected_deck_id`, since `authenticated` has no direct `UPDATE` grant on that column (7.2).
+
+Caller: `authenticated`. Derives the acting user from `auth.uid()` internally -- see section 10.6.
+
+### Required behavior
+
+Within one transaction:
+
+1. validate authenticated active tester -- admin is rejected
+2. validate the target deck belongs to the caller
+3. validate the target deck is not archived and not deleted
+4. update `profiles.selected_deck_id` to the target deck
+5. return the selected deck
+6. commit
+
+On any failure:
+
+```text
+rollback everything
+```
+
+This is the general-purpose deck-selection path. `duplicate_starter_deck()` (10.1) also sets `selected_deck_id`, but only as a side effect of duplicating (or re-resolving an existing copy of) an official template -- it cannot select an arbitrary already-owned deck that is not template-sourced. `select_deck()` covers that case directly, without touching `decks` or `cards`.
 
 ---
 
@@ -2231,7 +2345,9 @@ Recommended order:
 17. `start_or_resume_session()`
 18. `finish_session()`
 19. `commit_answer_transaction()` (invoked by the trusted Next.js server-side `submitAnswer()`; see section 10.3)
-20. integration tests / data-integrity tests
+20. `add_card_to_deck()` (see section 10.7)
+21. `select_deck()` (see section 10.8)
+22. integration tests / data-integrity tests
 
 ---
 
@@ -2248,8 +2364,14 @@ Before considering the schema implementation complete, verify at minimum:
   - 100 independent card copies
   - 100 NEW progress rows
 - re-running starter duplication does not create unintended duplicates
-- `authenticated` has no direct INSERT/UPDATE/DELETE grant on any trusted-state table (section 7.2); all mutation of those tables happens only via `duplicate_starter_deck()`, `start_or_resume_session()`, `finish_session()`, and `commit_answer_transaction()`
-- `commit_answer_transaction()` is not executable by `PUBLIC`, `anon`, or `authenticated` -- only by the future trusted server-only caller (section 10.3)
+- `authenticated` has no direct `INSERT` grant on `decks` or `cards` -- the only tester deck-creation path is `duplicate_starter_deck()`, and the only tester card-creation path is `add_card_to_deck()`
+- `add_card_to_deck()` always creates the card and its `NEW` `user_card_progress` row together -- a card can never exist without a matching progress row for its creator
+- `authenticated`'s direct `UPDATE` on `decks` is limited to `name`, `description`, `sort_order`, `archived_at`, `deleted_at`; a direct `UPDATE` touching `id`, `owner_user_id`, `source_deck_id`, `is_template`, `is_official`, `front_language`, `back_language`, `created_at`, or `updated_at` is rejected
+- `authenticated`'s direct `UPDATE` on `cards` is limited to `front`, `back`, `extra_content`, `sort_order`, `deleted_at`; a direct `UPDATE` touching `id`, `deck_id`, `created_by_user_id`, `source_card_id`, `created_at`, or `updated_at` is rejected
+- `select_deck()` only succeeds for a deck the caller owns that is neither archived nor deleted, and is the only direct path to change `profiles.selected_deck_id` outside of `duplicate_starter_deck()`
+- admin cannot persist content or state through `add_card_to_deck()` or `select_deck()`
+- `authenticated` has no direct INSERT/UPDATE/DELETE grant on any trusted-state table (section 7.2); all mutation of those tables happens only via `duplicate_starter_deck()`, `add_card_to_deck()` (which legitimately inserts the matching `user_card_progress` row for a personally-authored card), `start_or_resume_session()`, `finish_session()`, and `commit_answer_transaction()`
+- `commit_answer_transaction()` is not executable by `PUBLIC`, `anon`, or `authenticated` -- `EXECUTE` is granted to `service_role` only, invoked from the trusted Next.js server-side path; the service-role key never reaches the browser (section 10.3)
 - FSRS state and the internal rating estimator are computed in the trusted Next.js server-side `submitAnswer()` (TypeScript), never reimplemented in Postgres
 - answer retry with same `client_event_id` does not double-process
 - answer submission is atomic
