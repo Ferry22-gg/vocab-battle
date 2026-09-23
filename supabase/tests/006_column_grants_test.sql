@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 6: Column-level grants.
 -- Maps to DATABASE_SCHEMA.md §7.2 ("profiles"/"decks"/"cards" write-access
@@ -22,23 +22,23 @@ SELECT id AS tester_card FROM public.cards WHERE deck_id = :'tester_deck'::uuid 
 -- -----------------------------------------------------------------------
 -- profiles: protected columns
 -- -----------------------------------------------------------------------
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.profiles set role = %L where id = %L', 'admin', :'tester_id'),
   '42501', 'authenticated cannot directly UPDATE profiles.role'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.profiles set account_status = %L where id = %L', 'disabled', :'tester_id'),
   '42501', 'authenticated cannot directly UPDATE profiles.account_status'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.profiles set total_xp = 999999 where id = %L', :'tester_id'),
   '42501', 'authenticated cannot directly UPDATE profiles.total_xp'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.profiles set level = 99 where id = %L', :'tester_id'),
   '42501', 'authenticated cannot directly UPDATE profiles.level'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.profiles set selected_deck_id = %L where id = %L', :'tester_deck', :'tester_id'),
   '42501', 'authenticated cannot directly UPDATE profiles.selected_deck_id'
 );
@@ -47,27 +47,27 @@ SELECT throws_ok(
 -- decks: protected columns (target the tester's OWN deck, so RLS
 -- ownership is not what's blocking the write)
 -- -----------------------------------------------------------------------
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set owner_user_id = gen_random_uuid() where id = %L', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.owner_user_id'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set source_deck_id = gen_random_uuid() where id = %L', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.source_deck_id'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set is_template = true where id = %L', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.is_template'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set is_official = true where id = %L', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.is_official'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set front_language = %L where id = %L', 'fr', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.front_language'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.decks set back_language = %L where id = %L', 'fr', :'tester_deck'),
   '42501', 'authenticated cannot directly UPDATE decks.back_language'
 );
@@ -75,15 +75,15 @@ SELECT throws_ok(
 -- -----------------------------------------------------------------------
 -- cards: protected columns (target a card in the tester's OWN deck)
 -- -----------------------------------------------------------------------
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.cards set deck_id = gen_random_uuid() where id = %L', :'tester_card'),
   '42501', 'authenticated cannot directly UPDATE cards.deck_id'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.cards set created_by_user_id = gen_random_uuid() where id = %L', :'tester_card'),
   '42501', 'authenticated cannot directly UPDATE cards.created_by_user_id'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('update public.cards set source_card_id = gen_random_uuid() where id = %L', :'tester_card'),
   '42501', 'authenticated cannot directly UPDATE cards.source_card_id'
 );

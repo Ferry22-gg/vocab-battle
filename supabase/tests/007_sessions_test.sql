@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 7: Sessions (start_or_resume_session(), finish_session()).
 -- Maps to DATABASE_SCHEMA.md §17:
@@ -93,7 +93,7 @@ SELECT is(
 
 -- finish_session() only finishes the caller's OWN active session
 SELECT tests.authenticate_as(:'tester_b_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.finish_session(%L)', :'session_id'),
   '42501', 'tester B cannot finish tester A''s session'
 );
@@ -134,11 +134,11 @@ SELECT is(
 -- session workflow (same active-tester guard pattern already verified
 -- for duplicate_starter_deck()/add_card_to_deck()/select_deck())
 SELECT tests.authenticate_as(:'admin_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   'select public.start_or_resume_session()',
   '28000', 'admin is rejected by start_or_resume_session() (not an active tester account)'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.finish_session(%L)', :'new_session_id'),
   '28000', 'admin is rejected by finish_session() (not an active tester account)'
 );

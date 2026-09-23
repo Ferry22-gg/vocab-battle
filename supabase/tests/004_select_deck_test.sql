@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 4: select_deck().
 -- Maps to DATABASE_SCHEMA.md §17:
@@ -47,7 +47,7 @@ SELECT is(
 
 -- cannot select another tester's deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.select_deck(%L)', :'tester_b_deck1'),
   '42501',
   'tester A cannot select tester B''s deck'
@@ -57,7 +57,7 @@ SELECT tests.clear_auth();
 -- cannot select an archived deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
 UPDATE public.decks SET archived_at = now() WHERE id = :'tester_a_deck2'::uuid;
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.select_deck(%L)', :'tester_a_deck2'),
   '42501',
   'tester A cannot select their own archived deck'
@@ -67,7 +67,7 @@ SELECT tests.clear_auth();
 -- cannot select a soft-deleted deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
 UPDATE public.decks SET deleted_at = now() WHERE id = :'tester_a_deck1'::uuid;
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.select_deck(%L)', :'tester_a_deck1'),
   '42501',
   'tester A cannot select their own soft-deleted deck'
@@ -76,7 +76,7 @@ SELECT tests.clear_auth();
 
 -- admin cannot use it
 SELECT tests.authenticate_as(:'admin_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.select_deck(%L)', :'tester_b_deck1'),
   '28000',
   'admin is rejected by select_deck() regardless of target deck'

@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 1: Schema / starter data.
 -- Maps to DATABASE_SCHEMA.md §17:

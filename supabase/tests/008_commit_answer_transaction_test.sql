@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 8: commit_answer_transaction() integrity guarantees.
 -- Maps to DATABASE_SCHEMA.md §17 / §10.3-10.5 / §11.
@@ -71,7 +71,7 @@ SELECT is(
 SELECT current_enemy_hp AS s1_hp, current_combo AS s1_combo, learning_draw_index AS s1_ldi
   FROM public.sessions WHERE id = :'session1'::uuid \gset
 
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     $sql$select public.commit_answer_transaction(
       p_client_event_id => %L, p_user_id => %L, p_session_id => %L, p_card_id => %L,
@@ -98,7 +98,7 @@ SELECT throws_ok(
 -- -----------------------------------------------------------------------
 -- Part 3: admin learner answer persistence is rejected
 -- -----------------------------------------------------------------------
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     $sql$select public.commit_answer_transaction(
       p_client_event_id => gen_random_uuid(), p_user_id => %L,
@@ -189,7 +189,7 @@ SELECT ok(
 -- rejected at the permission-check stage (42501), before the function
 -- body -- and therefore its internal tester/role check -- ever runs.
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   $sql$select public.commit_answer_transaction(
     gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
     'NEW', 0, 0, 0, null, 90, 0, 0,
@@ -206,7 +206,7 @@ SELECT tests.authenticate_as_service_role();
 -- -----------------------------------------------------------------------
 -- Part 4: a Wrong answer cannot claim inconsistent damage/critical
 -- -----------------------------------------------------------------------
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     'select tests.call_commit_answer(%L, %L, %L, %L, false, %L, 1500, null, 10)',
     :'e3', :'tester_a_id', :'session1', :'card3', 'learning'
@@ -214,7 +214,7 @@ SELECT throws_ok(
   '22023',
   'a Wrong answer claiming nonzero damage is rejected'
 );
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     'select tests.call_commit_answer(%L, %L, %L, %L, false, %L, 1500, null, null, null, null, null, null, true)',
     :'e4', :'tester_a_id', :'session1', :'card4', 'learning'
@@ -227,6 +227,12 @@ SELECT throws_ok(
 -- Part 5: Review mode -- first Wrong requeues, second Wrong -> FORGOTTEN,
 -- final review completion transitions the session to Learning
 -- -----------------------------------------------------------------------
+-- Harness fix (2026-09-24): Part 4 leaves the session as service_role
+-- (from authenticate_as_service_role() before it). tests.authenticate_as()
+-- does `SET LOCAL ROLE authenticated`, which service_role has no
+-- membership to switch into -- must clear back to the privileged role
+-- first, exactly like every other role transition in this suite.
+SELECT tests.clear_auth();
 SELECT tests.authenticate_as(:'tester_b_id'::uuid);
 SELECT (public.duplicate_starter_deck(:'deck_i_id'::uuid)).id AS deck_b \gset
 SELECT tests.clear_auth();
@@ -367,7 +373,7 @@ SELECT is(
 
 -- Correct Learning cooldown is respected: card_l1 (next_eligible = 12)
 -- cannot be answered again yet (we are only at draw 3)
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     'select tests.call_commit_answer(gen_random_uuid(), %L, %L, %L, true, %L)',
     :'tester_b_id', :'session_r', :'card_l1', 'learning'
@@ -397,7 +403,8 @@ SELECT throws_ok(
 -- pattern used for every other direct fixture mutation in this suite --
 -- not as service_role, which is not verified to hold a direct write
 -- grant on these tables (see the review-finding comment on
--- tests.authenticate_as_service_role() in fixtures/000_test_helpers.sql).
+-- tests.authenticate_as_service_role() in
+-- supabase/tests/fixtures/000_test_helpers.inc).
 -- -----------------------------------------------------------------------
 SELECT tests.clear_auth();
 UPDATE public.sessions SET learning_draw_index = 100 WHERE id = :'session_r'::uuid;
@@ -433,7 +440,7 @@ SELECT tests.clear_auth();
 UPDATE public.sessions SET learning_draw_index = 109 WHERE id = :'session_r'::uuid;
 SELECT tests.authenticate_as_service_role();
 
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format(
     'select tests.call_commit_answer(gen_random_uuid(), %L, %L, %L, true, %L)',
     :'tester_b_id', :'session_r', :'card_intruder', 'learning'

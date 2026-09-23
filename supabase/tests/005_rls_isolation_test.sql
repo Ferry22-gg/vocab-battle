@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 5: RLS isolation.
 -- Maps to DATABASE_SCHEMA.md §17 / §7.1-7.2:

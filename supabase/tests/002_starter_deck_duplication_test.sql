@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 2: Starter deck duplication (duplicate_starter_deck()).
 -- Maps to DATABASE_SCHEMA.md §17:
@@ -111,7 +111,7 @@ SELECT is(
 
 -- admin cannot use duplicate_starter_deck() to persist learner content
 SELECT tests.authenticate_as(:'admin_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.duplicate_starter_deck(%L)', :'official_deck_id'),
   '28000',
   'admin is rejected by duplicate_starter_deck() (not an active tester account)'

@@ -1,18 +1,46 @@
 -- Shared pgTAP test fixtures for the Vocab Battle database test suite.
 --
--- This file is NOT itself a pgTAP test (it defines no plan()/finish()), so
--- it must live outside supabase/tests/ proper -- `supabase test db`
--- discovers and runs every *.sql file directly under supabase/tests/ (see
--- the README in that directory), and a fixtures-only file with no TAP
--- output would break that run. Every real test file includes this one
--- explicitly via a psql \ir (include-relative) meta-command as its first
--- line, e.g. from supabase/tests/001_..._test.sql:
+-- LOCATION AND EXTENSION (harness fix, 2026-09-24, second iteration):
+-- this file lives at supabase/tests/fixtures/000_test_helpers.inc.
 --
---   \ir fixtures/000_test_helpers.sql
+-- Two real `supabase test db` runs against an actual local Docker
+-- container each disproved a prior assumption here, in opposite
+-- directions:
 --
--- `supabase test db` shells out to psql per file, and \ir is a standard
--- psql feature (not a custom test framework) -- this is the same sharing
--- mechanism pgTAP's own documentation recommends for common setup code.
+--   1. First it lived at supabase/tests/fixtures/000_test_helpers.sql.
+--      `supabase test db` recursively discovers and runs every *.sql
+--      file anywhere under supabase/tests/ (subdirectories included) as
+--      its own independent pgTAP test, so this fixtures-only file (no
+--      plan()/finish()) was executed on its own and failed with
+--      "No plan found in TAP output".
+--   2. The fix for that -- moving the file to a sibling directory,
+--      supabase/test-support/, entirely outside supabase/tests/ -- broke
+--      in the opposite way: `supabase test db` runs pg_prove/psql inside
+--      a Docker container that only mounts (i.e. can see) the
+--      supabase/tests/ directory tree. A path outside it, even a
+--      filesystem sibling on the host, does not exist inside that
+--      container, so `\ir ../test-support/000_test_helpers.sql` failed
+--      with "No such file or directory" before a single assertion ran.
+--
+-- The actual constraint, now confirmed from both directions: the file
+-- MUST live inside supabase/tests/ (so the container can see it) AND
+-- must NOT have a .sql extension (so `supabase test db`'s *.sql
+-- discovery does not also try to run it as its own test). Hence
+-- supabase/tests/fixtures/000_test_helpers.inc -- ordinary SQL/psql
+-- content, just not named *.sql. Every real test file includes it via a
+-- psql \ir (include-relative) meta-command as its first line, e.g. from
+-- supabase/tests/001_..._test.sql:
+--
+--   \ir fixtures/000_test_helpers.inc
+--
+-- `supabase test db` shells out to psql per file, and \ir resolves
+-- relative to the INCLUDING file's own directory, not the caller's cwd,
+-- and reads whatever file it's pointed at regardless of that file's
+-- extension -- \ir is a standard psql feature (not a custom test
+-- framework), and this pattern (a non-.sql include alongside .sql test
+-- files) is the same sharing mechanism pgTAP's own documentation
+-- recommends for common setup code, adapted to this CLI's specific
+-- discovery + container-mount behavior.
 --
 -- ---------------------------------------------------------------------
 -- Auth/JWT simulation -- how these tests stand in for real Supabase Auth
@@ -46,8 +74,49 @@
 -- What this does NOT simulate: real password auth, email confirmation,
 -- refresh tokens, JWT signature verification, or GoTrue's own business
 -- rules. Anything that depends on those belongs to the Auth branch, not
--- this database test suite -- see the README for exactly which of the
--- 12 required test groups fall on that side of the line.
+-- this database test suite -- see supabase/tests/README.md for exactly
+-- which of the 12 required test groups fall on that side of the line.
+--
+-- ---------------------------------------------------------------------
+-- Schema/function privileges for the two switched-into test roles
+-- (harness fix, 2026-09-24)
+-- ---------------------------------------------------------------------
+--
+-- A real `supabase test db` run failed every file that switches role
+-- with "permission denied for schema tests" the moment it called
+-- tests.clear_auth() (or any other tests.* function) while the session
+-- was `authenticated`/`service_role`. Root cause: CREATE SCHEMA does not
+-- grant USAGE on the new schema to anyone but its owner -- unlike
+-- `public`, whose USAGE-to-PUBLIC grant is a Postgres/Supabase default
+-- that already existed before this suite touched anything, `tests` is a
+-- brand-new schema with no such default, so simply having EXECUTE on a
+-- function inside it (which Postgres functions get from PUBLIC by
+-- default) was never enough -- schema USAGE is a separate, prerequisite
+-- privilege layer checked before a function can even be resolved.
+--
+-- Fix, applied at the bottom of this file (after every function below is
+-- defined): grant USAGE ON SCHEMA tests to authenticated and
+-- service_role (the only two roles this suite ever switches into), then
+-- explicitly REVOKE the Postgres-default PUBLIC EXECUTE from every
+-- function in this schema and GRANT EXECUTE back only on the specific
+-- functions each switched-role context actually calls while already
+-- switched (per DATABASE_SCHEMA.md-style least privilege, and per
+-- review requirement: "ensure authenticated/service_role test contexts
+-- can use only the helper functionality necessary for the test
+-- harness"). tests.create_test_profile()/authenticate_as()/
+-- authenticate_as_service_role()/official_deck_id() are NEVER called
+-- while already switched anywhere in this suite (verified by grep against
+-- every test file), so they get no such grant -- only the privileged
+-- connecting role (which owns everything and is unaffected by any of
+-- these GRANT/REVOKE statements) can call them, which is exactly the
+-- existing "must run before switching" constraint, now enforced by the
+-- database itself instead of just documented.
+--
+-- These are test-only grants living entirely inside this file (never a
+-- supabase/migrations/ file), scoped to a schema that is not part of the
+-- application's schema at all and is never exposed through the Data API
+-- (see supabase/config.toml's `[api] schemas`) -- they do not touch, and
+-- cannot weaken, any production RLS policy or table grant.
 
 create schema if not exists tests;
 
@@ -68,8 +137,10 @@ create schema if not exists tests;
 -- privileged connecting/table-owner role, i.e. strictly BEFORE any
 -- tests.authenticate_as()/authenticate_as_service_role() call in that
 -- file. `authenticated`/`service_role` have no INSERT grant on
--- auth.users, so calling this function after switching role would fail.
--- If a future test ever needs to create a profile mid-scenario, call
+-- auth.users, so calling this function after switching role would fail
+-- -- and, per the grant scheme at the bottom of this file, now cannot
+-- even be attempted (no EXECUTE grant to either switched role). If a
+-- future test ever needs to create a profile mid-scenario, call
 -- tests.clear_auth() first.
 -- ---------------------------------------------------------------------
 create or replace function tests.create_test_profile(
@@ -160,7 +231,10 @@ $$;
 -- ---------------------------------------------------------------------
 -- tests.clear_auth: drop back to the privileged connecting role (table
 -- owner, bypasses RLS) -- used between scenarios and for ground-truth
--- assertions that must see rows regardless of RLS.
+-- assertions that must see rows regardless of RLS. This is the one
+-- function every switched-role context needs to be able to call (it's
+-- how they escape back), so it alone is granted to both authenticated
+-- and service_role below.
 -- ---------------------------------------------------------------------
 create or replace function tests.clear_auth() returns void
 language plpgsql
@@ -187,6 +261,65 @@ as $$
     and is_template = true
   limit 1;
 $$;
+
+-- ---------------------------------------------------------------------
+-- tests.throws_sqlstate: assert that executing p_sql raises EXACTLY
+-- p_expected_sqlstate, checking the SQLSTATE only -- never the error
+-- message text.
+--
+-- HARNESS FIX (2026-09-24): a real `supabase test db` run showed the
+-- installed pgTAP's throws_ok(sql, code_or_message, description) does
+-- NOT reliably treat a 5-character value like '42501' as a SQLSTATE --
+-- it was instead compared against the raised error's MESSAGE text, so
+-- throws_ok(sql, '42501', 'authenticated cannot directly UPDATE
+-- profiles.role') failed even though the SQLSTATE genuinely matched,
+-- because the description string obviously never matches Postgres's own
+-- message text ("permission denied for table profiles"). Every call
+-- across this suite only ever wanted the SQLSTATE checked, with the
+-- third argument used purely as a human-readable test description --
+-- never as an expected message pattern. Rather than depend on pgTAP's
+-- own errcode-vs-message disambiguation (whatever it turns out to
+-- actually be in the installed version), this function does the check
+-- directly and unambiguously: catch any exception from p_sql, compare
+-- ONLY its returned SQLSTATE, and report through pgTAP's own ok()/diag()
+-- primitives (which have no such ambiguity -- ok() takes a boolean, not
+-- a value to pattern-match). Every throws_ok(sql, code, description)
+-- call in this suite -- including inside tests.assert_no_write_grants()
+-- below -- was replaced with tests.throws_sqlstate(sql, code,
+-- description) for this reason.
+-- ---------------------------------------------------------------------
+create or replace function tests.throws_sqlstate(
+  p_sql text,
+  p_expected_sqlstate text,
+  p_description text
+) returns setof text
+language plpgsql
+as $$
+declare
+  v_actual_sqlstate text;
+  v_ok boolean;
+begin
+  begin
+    execute p_sql;
+    v_actual_sqlstate := null;
+  exception when others then
+    get stacked diagnostics v_actual_sqlstate = returned_sqlstate;
+  end;
+
+  v_ok := (v_actual_sqlstate is not distinct from p_expected_sqlstate);
+  return next ok(v_ok, p_description);
+  if not v_ok then
+    return next diag(format(
+      'expected SQLSTATE %s but got %s',
+      p_expected_sqlstate,
+      coalesce(v_actual_sqlstate, '(no exception raised)')
+    ));
+  end if;
+end;
+$$;
+
+comment on function tests.throws_sqlstate(text, text, text) is
+  'Test fixture only. SQLSTATE-only replacement for pgTAP''s throws_ok(), whose installed errcode-vs-message disambiguation proved unreliable against a real Supabase pgTAP run (see the comment above this function). Never matches on error message text.';
 
 -- ---------------------------------------------------------------------
 -- tests.call_commit_answer: thin wrapper around
@@ -323,20 +456,86 @@ create or replace function tests.assert_no_write_grants(p_table text) returns se
 language plpgsql
 as $$
 begin
-  return next throws_ok(
+  return next tests.throws_sqlstate(
     format('insert into public.%I default values', p_table),
     '42501',
     format('authenticated has no INSERT grant on %s', p_table)
   );
-  return next throws_ok(
+  return next tests.throws_sqlstate(
     format('update public.%I set id = id', p_table),
     '42501',
     format('authenticated has no UPDATE grant on %s', p_table)
   );
-  return next throws_ok(
+  return next tests.throws_sqlstate(
     format('delete from public.%I', p_table),
     '42501',
     format('authenticated has no DELETE grant on %s', p_table)
   );
+end;
+$$;
+
+-- ---------------------------------------------------------------------
+-- Schema/function grants for the switched-into test roles (see the
+-- header comment above for the full "permission denied for schema
+-- tests" root cause and rationale). Placed last, after every function
+-- above is defined, since the dynamic REVOKE loop below discovers them
+-- via pg_proc.
+-- ---------------------------------------------------------------------
+
+grant usage on schema tests to authenticated, service_role;
+
+-- Strip the Postgres-default PUBLIC EXECUTE from every function in this
+-- schema, driven off the catalog rather than hand-typed signatures (this
+-- schema's functions include a 15-argument one -- transcribing that by
+-- hand into a REVOKE statement is exactly the kind of thing that goes
+-- unnoticed until a real run, which is the whole reason this file is
+-- being hardened right now).
+do $$
+declare
+  r record;
+begin
+  for r in
+    select p.oid::regprocedure::text as sig
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'tests'
+  loop
+    execute format('revoke all on function %s from public', r.sig);
+  end loop;
+end;
+$$;
+
+-- Grant back only what each switched-role context actually calls while
+-- already switched (verified by grep against every supabase/tests/*.sql
+-- file at the time this was written):
+--   authenticated -> tests.clear_auth(), tests.throws_sqlstate(),
+--                     tests.assert_no_write_grants()
+--   service_role  -> tests.clear_auth(), tests.throws_sqlstate(),
+--                     tests.call_commit_answer()
+-- Resolved dynamically for the same hand-typing-risk reason as the loop
+-- above.
+do $$
+declare
+  v_sig text;
+begin
+  select p.oid::regprocedure::text into v_sig
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'tests' and p.proname = 'clear_auth';
+  execute format('grant execute on function %s to authenticated, service_role', v_sig);
+
+  select p.oid::regprocedure::text into v_sig
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'tests' and p.proname = 'throws_sqlstate';
+  execute format('grant execute on function %s to authenticated, service_role', v_sig);
+
+  select p.oid::regprocedure::text into v_sig
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'tests' and p.proname = 'assert_no_write_grants';
+  execute format('grant execute on function %s to authenticated', v_sig);
+
+  select p.oid::regprocedure::text into v_sig
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'tests' and p.proname = 'call_commit_answer';
+  execute format('grant execute on function %s to service_role', v_sig);
 end;
 $$;

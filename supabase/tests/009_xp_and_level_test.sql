@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 9: XP / level.
 -- Maps to DATABASE_SCHEMA.md §17 / §10.4 (XP idempotency, exact amounts)

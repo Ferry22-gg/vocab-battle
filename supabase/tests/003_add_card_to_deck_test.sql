@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 3: add_card_to_deck().
 -- Maps to DATABASE_SCHEMA.md §17 (post-Phase-6C additions):
@@ -77,7 +77,7 @@ SELECT is(
 
 -- cannot add to another tester's deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.add_card_to_deck(%L, %L, %L)', :'tester_b_deck1', 'x', 'y'),
   '42501',
   'tester A cannot add a card to tester B''s deck'
@@ -87,7 +87,7 @@ SELECT tests.clear_auth();
 -- cannot add to an archived deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
 UPDATE public.decks SET archived_at = now() WHERE id = :'tester_a_deck1'::uuid;
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.add_card_to_deck(%L, %L, %L)', :'tester_a_deck1', 'x', 'y'),
   '42501',
   'tester A cannot add a card to their own archived deck'
@@ -97,7 +97,7 @@ SELECT tests.clear_auth();
 -- cannot add to a deleted (soft-deleted) deck
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
 UPDATE public.decks SET deleted_at = now() WHERE id = :'tester_a_deck2'::uuid;
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.add_card_to_deck(%L, %L, %L)', :'tester_a_deck2', 'x', 'y'),
   '42501',
   'tester A cannot add a card to their own soft-deleted deck'
@@ -106,7 +106,7 @@ SELECT tests.clear_auth();
 
 -- admin cannot use it
 SELECT tests.authenticate_as(:'admin_id'::uuid);
-SELECT throws_ok(
+SELECT tests.throws_sqlstate(
   format('select public.add_card_to_deck(%L, %L, %L)', :'tester_b_deck1', 'x', 'y'),
   '28000',
   'admin is rejected by add_card_to_deck() regardless of target deck'

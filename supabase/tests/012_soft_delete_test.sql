@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 12: Soft delete.
 -- Maps to DATABASE_SCHEMA.md §17 / §2.5 / §7.2:
@@ -20,8 +20,8 @@ SELECT tests.create_test_profile(:'tester_z_id'::uuid, 'test_g12_tester_z');
 -- No hard DELETE path exists for authenticated testers on decks/cards
 -- -----------------------------------------------------------------------
 SELECT tests.authenticate_as(:'tester_x_id'::uuid);
-SELECT throws_ok('delete from public.decks', '42501', 'authenticated has no DELETE grant on decks');
-SELECT throws_ok('delete from public.cards', '42501', 'authenticated has no DELETE grant on cards');
+SELECT tests.throws_sqlstate('delete from public.decks', '42501', 'authenticated has no DELETE grant on decks');
+SELECT tests.throws_sqlstate('delete from public.cards', '42501', 'authenticated has no DELETE grant on cards');
 
 -- Soft delete (deleted_at) IS the sanctioned tester-initiated path
 SELECT (public.duplicate_starter_deck(:'deck_i_id'::uuid)).id AS deck_x \gset

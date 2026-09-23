@@ -1,4 +1,4 @@
-\ir fixtures/000_test_helpers.sql
+\ir fixtures/000_test_helpers.inc
 
 -- Group 10: Daily Goal / streak.
 -- Maps to DATABASE_SCHEMA.md §17 / §10.5 (Daily Goal idempotency, streak
