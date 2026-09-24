@@ -1,8 +1,10 @@
 import { type NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy";
+import { applyAuthRedirects } from "@/lib/auth/optimistic-guard";
 
 export async function proxy(request: NextRequest) {
-  return await updateSession(request);
+  const { response, isAuthenticated } = await updateSession(request);
+  return applyAuthRedirects(request, response, isAuthenticated);
 }
 
 export const config = {
