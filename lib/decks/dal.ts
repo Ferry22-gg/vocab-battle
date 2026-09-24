@@ -43,6 +43,31 @@ export const getStarterDecks = cache(async (): Promise<StarterDeck[]> => {
 });
 
 /**
+ * Fetches a single deck by id for display purposes only (e.g. Home showing
+ * the tester's selected deck). Relies entirely on RLS
+ * (decks_select_own_or_official_or_admin) to scope this to decks the
+ * caller may actually see -- a deck the caller doesn't own and that isn't
+ * official/they aren't admin for simply comes back as `null`, the same as
+ * a nonexistent id. Not a validity/ownership check for any write path;
+ * callers needing that must not rely on this function.
+ */
+export async function getDeckById(deckId: string): Promise<StarterDeck | null> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("decks")
+    .select(STARTER_DECK_COLUMNS)
+    .eq("id", deckId)
+    .maybeSingle<StarterDeck>();
+
+  if (error) {
+    throw new Error("Failed to load deck", { cause: error });
+  }
+
+  return data;
+}
+
+/**
  * Server-side membership check for a client-submitted deck id. A deck id
  * "existing" in the table is not sufficient -- it must be one of the
  * official starter templates actually offered, not e.g. another user's
