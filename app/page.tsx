@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireOnboardedTester } from "@/lib/auth/dal";
 import { getDeckById } from "@/lib/decks/dal";
 import { logout } from "@/app/actions/auth";
@@ -26,6 +27,20 @@ export default async function HomePage() {
         <p className="mb-6 text-sm text-zinc-600 dark:text-zinc-400">
           Tester ID {tester.publicUserId}
         </p>
+
+        {/*
+          Zero-Cognitive-Load (MVP_UI_SPEC.md 2.2/8.3): a single obvious
+          CTA, no "New session or Resume?" choice on this screen -- /session
+          itself calls startOrResumeSession() (no deck argument) and
+          transparently resumes any existing active session or starts a
+          new one against the tester's selected deck.
+        */}
+        <Link
+          href="/session"
+          className="mb-6 block w-full rounded-md bg-indigo-600 px-4 py-3 text-center text-sm font-semibold text-white transition-colors hover:bg-indigo-500 dark:bg-indigo-500 dark:hover:bg-indigo-400"
+        >
+          SESSION START
+        </Link>
 
         <div className="mb-6 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-500">
