@@ -100,6 +100,18 @@ export async function updateSessionAdmin(sessionId: string, patch: Record<string
   if (error) throw error;
 }
 
+export async function getSessionLearningQueueRowAdmin(sessionId: string, cardId: string) {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("session_learning_queue")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("card_id", cardId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 export async function upsertDailyUserStatsAdmin(
   userId: string,
   statDate: string,

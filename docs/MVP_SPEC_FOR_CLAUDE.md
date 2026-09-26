@@ -426,6 +426,17 @@ If the forced position is already reserved:
 
 - shift the newly scheduled reservation forward until a free position is found
 
+The card cannot be selected again before this (possibly collision-shifted)
+final reserved draw, and must be selected at it:
+
+`next_eligible_draw_index = forced_reappear_draw_index` (the same,
+collision-shifted final value -- not the pre-shift `N + gap`)
+
+So the reserved draw is both a floor (the earliest eligible draw) and a
+guarantee (the draw at which the card must be selected) -- symmetric with
+Correct's `next_eligible_draw_index`, except Wrong's floor is a random
+draw in `N+6..9` (post-shift) rather than a fixed `N+11`.
+
 This per-session queue state must survive session resume.
 
 This queue/cooldown state is not the same thing as the Active Pool.
