@@ -24,3 +24,69 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * Session battle-feedback keyframes (P2 Session UX Polish). Kept short and
+ * decorative-only -- none of them gate interaction (see
+ * lib/session-ui/reveal-guard.ts for the one animation, the card flip,
+ * whose completion actually matters, and which uses a real CSS transition
+ * + transitionend rather than a keyframe).
+ */
+@keyframes vb-float-fade {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-28px);
+    opacity: 0;
+  }
+}
+
+@keyframes vb-pop-fade {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+}
+
+@keyframes vb-toast-fade {
+  0% {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+  12% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  88% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-6px);
+    opacity: 0;
+  }
+}
+
+/* Defense-in-depth on top of the JS `reducedMotion` prop branching used
+ * throughout app/session/*: if any transition/animation duration ever
+ * slips through unbranched, this neutralizes it site-wide rather than
+ * silently causing discomfort. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
