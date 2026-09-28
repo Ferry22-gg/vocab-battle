@@ -12,7 +12,7 @@ import { createQueryChainMock } from "./helpers";
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 
 const { createClient } = await import("@/lib/supabase/server");
-const { startOrResumeSession, finishSession, getActiveSessionById } = await import(
+const { startOrResumeSession, finishSession, getActiveSessionById, getNextSessionCard } = await import(
   "@/lib/sessions/dal"
 );
 
@@ -118,7 +118,7 @@ describe("getActiveSessionById", () => {
       current_combo: 3,
       current_enemy_type: "enemy_b",
       current_enemy_hp: 50,
-      current_enemy_max_hp: 105,
+      current_enemy_max_hp: 110,
       learning_draw_index: 7,
     };
     const { chain } = createQueryChainMock({ data: row, error: null });
@@ -136,5 +136,130 @@ describe("getActiveSessionById", () => {
       message: expect.not.stringContaining("connection reset"),
       cause: dbError,
     });
+  });
+});
+
+describe("getNextSessionCard", () => {
+  it("calls get_next_session_card with p_session_id and no other parameter", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { status: "not_found" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await getNextSessionCard("session-1");
+
+    expect(rpc).toHaveBeenCalledWith("get_next_session_card", { p_session_id: "session-1" });
+  });
+
+  it("throws a server-safe error (raw error only in cause) on RPC failure", async () => {
+    const dbError = { message: "permission denied for function get_next_session_card", code: "42501" };
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: dbError });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).rejects.toMatchObject({
+      message: expect.not.stringContaining("permission denied"),
+      cause: dbError,
+    });
+  });
+
+  it("returns status: not_found as-is", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { status: "not_found" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).resolves.toEqual({ status: "not_found" });
+  });
+
+  it("returns a recognized no_card reason as-is", async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValue({ data: { status: "no_card", reason: "LEARNING_ALL_ON_COOLDOWN" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).resolves.toEqual({
+      status: "no_card",
+      reason: "LEARNING_ALL_ON_COOLDOWN",
+    });
+  });
+
+  it("returns a recognized error reason as-is", async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValue({ data: { status: "error", reason: "SESSION_MISSING_BATTLE_STATE" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).resolves.toEqual({
+      status: "error",
+      reason: "SESSION_MISSING_BATTLE_STATE",
+    });
+  });
+
+  it("normalizes a well-formed ok result into camelCase fields", async () => {
+    const okRow = {
+      status: "ok",
+      session_id: "session-1",
+      session_mode: "learning",
+      card_id: "card-1",
+      front: "ubiquitous",
+      back: "遍在する",
+      enemy_type: "enemy_b",
+      enemy_hp: 50,
+      enemy_max_hp: 110,
+      combo: 3,
+    };
+    const rpc = vi.fn().mockResolvedValue({ data: okRow, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).resolves.toEqual({
+      status: "ok",
+      sessionId: "session-1",
+      sessionMode: "learning",
+      cardId: "card-1",
+      front: "ubiquitous",
+      back: "遍在する",
+      enemyType: "enemy_b",
+      enemyHp: 50,
+      enemyMaxHp: 110,
+      combo: 3,
+    });
+  });
+
+  it("throws on a malformed ok result (missing required field) rather than reaching the UI", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        status: "ok",
+        session_id: "session-1",
+        session_mode: "learning",
+        card_id: "card-1",
+        front: "ubiquitous",
+        // back is missing
+        enemy_type: "enemy_b",
+        enemy_hp: 50,
+        enemy_max_hp: 110,
+        combo: 3,
+      },
+      error: null,
+    });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).rejects.toThrow(/malformed "ok" result/);
+  });
+
+  it("throws on an unrecognized status rather than reaching the UI", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { status: "something_new" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).rejects.toThrow(/unrecognized status/);
+  });
+
+  it("throws on an unrecognized no_card reason rather than reaching the UI", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { status: "no_card", reason: "SOMETHING_NEW" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).rejects.toThrow(/unrecognized no_card reason/);
+  });
+
+  it("throws when the RPC result is not a JSON object at all", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: "not an object", error: null });
+    vi.mocked(createClient).mockResolvedValue({ rpc } as never);
+
+    await expect(getNextSessionCard("session-1")).rejects.toThrow(/not a JSON object/);
   });
 });

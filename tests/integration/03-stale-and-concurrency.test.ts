@@ -101,6 +101,7 @@ describe("stale snapshot and concurrency (real commit_answer_transaction)", () =
   let cardX: string;
   let cardY1: string;
   let cardY2: string;
+  let cardZ: string;
 
   beforeAll(async () => {
     await resetTesterLearnerData(STALE_TESTER);
@@ -108,7 +109,7 @@ describe("stale snapshot and concurrency (real commit_answer_transaction)", () =
     // Pre-selected once, up front -- pickCards always returns the same
     // sort_order-ascending cards, so calling it again from a later test
     // would silently re-select cards an earlier test already mutated.
-    [cardX, cardY1, cardY2] = await pickCards(tester, 3);
+    [cardX, cardY1, cardY2, cardZ] = await pickCards(tester, 4);
     const session = await startOrResumeSessionFor(tester);
     sessionId = session.id;
     setRlsClient(tester.client);
@@ -119,26 +120,28 @@ describe("stale snapshot and concurrency (real commit_answer_transaction)", () =
   });
 
   it("deterministic case: committing with a manually-staled snapshot surfaces real SQLSTATE 40001", async () => {
+    // Two DIFFERENT cards, not one resubmitted twice: as of the Learning
+    // Wrong reappearance floor (20260927000000_learning_wrong_reappearance_
+    // floor.sql), BOTH Correct and Wrong now set next_eligible_draw_index
+    // on the answered card, so resubmitting the SAME card a second time
+    // would fail on that unrelated Learning-cooldown ground (22023) before
+    // ever reaching the stale-snapshot comparison this test is about.
+    //
+    // Instead: build a commit input for cardZ from CURRENT (soon-to-be-
+    // stale) state first, then commit a real, unrelated Wrong answer for a
+    // different card (cardX) -- which advances session-level state
+    // (learning_draw_index, the field this comparison is keyed on for
+    // Learning mode) without touching cardZ's own cooldown/progress at
+    // all. Submitting the cardZ input afterward is a genuinely new
+    // logical answer (cardZ was never touched, so it passes the
+    // eligibility check) whose captured expectedSessionLearningDrawIndex
+    // no longer matches reality -- reaching the stale-snapshot comparison
+    // cleanly, with no cooldown interference on either card.
+    const staleInput = await buildCommitInputFromCurrentState(tester, sessionId, cardZ, crypto.randomUUID(), false);
 
-    // Wrong (not Correct): a correct Learning-mode answer sets a 10-draw
-    // cooldown on the card (DATABASE_SCHEMA.md 11.3), which would make a
-    // second real submission for the same card fail on that unrelated
-    // ground before ever reaching the stale-snapshot comparison. A Wrong
-    // answer sets no such cooldown, so a second attempt genuinely reaches
-    // the comparison this test is about. seen_count and
-    // learning_draw_index still advance either way, which is enough to
-    // make the reused snapshot genuinely stale.
     const firstInput = await buildCommitInputFromCurrentState(tester, sessionId, cardX, crypto.randomUUID(), false);
-
-    // Commit it for real -- this legitimately changes progress/session state.
     const firstResult = await commitAnswerTransaction(firstInput);
     expect(firstResult.is_replay).toBe(false);
-
-    // Reuse the SAME (now-stale) computed snapshot for a second, different
-    // clientEventId -- this is not a replay (different id), so it must go
-    // through full stale-snapshot validation against the state the first
-    // commit just changed.
-    const staleInput = { ...firstInput, clientEventId: crypto.randomUUID() };
 
     await expect(commitAnswerTransaction(staleInput)).rejects.toSatisfy((error: unknown) => {
       expect(error).toBeInstanceOf(CommitAnswerTransactionError);
@@ -150,8 +153,10 @@ describe("stale snapshot and concurrency (real commit_answer_transaction)", () =
 
     // The rejected attempt performed no writes at all.
     expect(await countAnswerEventsByClientEventId(staleInput.clientEventId)).toBe(0);
-    const progressAfter = await getUserCardProgressAdmin(tester.userId, cardX);
-    expect(progressAfter.seen_count).toBe(1); // only the first commit took effect
+    const progressZAfter = await getUserCardProgressAdmin(tester.userId, cardZ);
+    expect(progressZAfter.seen_count).toBe(0); // cardZ itself was never actually answered
+    const progressXAfter = await getUserCardProgressAdmin(tester.userId, cardX);
+    expect(progressXAfter.seen_count).toBe(1); // only the real cardX commit took effect
   });
 
   // Best-effort real-concurrency proof, per the task's "prefer an actual

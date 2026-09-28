@@ -37,6 +37,8 @@ export const DAILY_GOAL_TESTER = tester("907"); // scenario 13: Daily Goal/strea
 export const TIMESTAMP_TESTER = tester("908"); // scenario 15: timestamp round-trip
 export const RLS_TESTER_A = tester("909"); // scenario 14: RLS isolation
 export const RLS_TESTER_B = tester("910"); // scenario 14: RLS isolation
+export const NEXT_CARD_TESTER = tester("911"); // scenario 16: get_next_session_card()
+export const WRONG_FLOOR_TESTER = tester("912"); // scenario 17: Learning Wrong reappearance floor
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -49,6 +51,8 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   TIMESTAMP_TESTER,
   RLS_TESTER_A,
   RLS_TESTER_B,
+  NEXT_CARD_TESTER,
+  WRONG_FLOOR_TESTER,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;

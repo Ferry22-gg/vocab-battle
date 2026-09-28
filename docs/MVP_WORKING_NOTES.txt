@@ -143,6 +143,11 @@ LEARNING DRAW / REAPPEARANCE
   - forced position is randomly chosen
 - If two forced reappearances collide:
   - later reservation shifts forward until a free position is found
+- Wrong also sets a cooldown FLOOR: the card cannot be selected again
+  before its (possibly collision-shifted) final reserved draw --
+  next_eligible_draw_index = forced_reappear_draw_index (the shifted
+  final value). The reserved draw is both the earliest eligible draw and
+  the forced/guaranteed reappearance draw.
 - Queue/cooldown state survives session resume
 - This queue is NOT the Active Pool
 
@@ -191,8 +196,8 @@ BATTLE
 
 Initial enemy HP:
 - Enemy A: 90
-- Enemy B: 105
-- Enemy C: 120
+- Enemy B: 110
+- Enemy C: 160
 
 Damage:
 - Correct -> damage

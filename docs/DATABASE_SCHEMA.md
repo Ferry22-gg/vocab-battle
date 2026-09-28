@@ -733,8 +733,8 @@ Internal stable identifiers only -- not display names or art labels (those are m
 | `current_enemy_type` | Initial HP |
 |---|---:|
 | `enemy_a` | 90 |
-| `enemy_b` | 105 |
-| `enemy_c` | 120 |
+| `enemy_b` | 110 |
+| `enemy_c` | 160 |
 
 ### Initial enemy and Daily Goal snapshot (new sessions)
 
@@ -942,6 +942,14 @@ until an unreserved position is found
 ```
 
 Collision-shift applies only among Learning-mode forced-reappearance positions in this table -- it is a separate rule from, and never applied to, `session_review_cards`' own reordering (4.6).
+
+The card is not eligible again before this (possibly collision-shifted) final reserved draw:
+
+```text
+next_eligible_draw_index = forced_reappear_draw_index
+```
+
+using the same final, collision-shifted value for both columns -- never the pre-shift `N + gap`. This makes the reserved draw simultaneously a floor (`commit_answer_transaction()`'s existing Learning-cooldown check, 10.3, already rejects an earlier attempt once this is set -- no separate check needed) and a guarantee (Gate 1 of `get_next_session_card()`, 10.3/get_next_session_card() header, still forces the card exactly at that draw regardless of the now-also-matching `next_eligible_draw_index`).
 
 Rows are created only when a card is first used in that session.
 
@@ -2170,6 +2178,14 @@ later reservation shifts forward until free
 ```
 
 Collision-shift applies only among Learning-mode forced-reappearance positions -- it is a separate rule from, and never applied to, the Review queue's own reordering (4.6).
+
+The card cannot be selected before this final (possibly collision-shifted) draw, and must be selected at it:
+
+```text
+next_eligible_draw_index = forced_reappear_draw_index (the shifted final value)
+```
+
+See 4.7 "Behavior" for the full floor/guarantee rationale.
 
 After a successful commit of a new (non-replay) Learning-mode answer:
 

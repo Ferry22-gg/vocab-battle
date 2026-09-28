@@ -134,3 +134,159 @@ export async function getActiveSessionById(sessionId: string): Promise<SessionRo
 
   return data as SessionRow | null;
 }
+
+// =============================================================================
+// getNextSessionCard() -- Phase F0 (docs/DATABASE_SCHEMA.md 4.4/4.6/4.7/9.1/
+// 10.3/11)
+// =============================================================================
+
+const NO_CARD_REASONS = [
+  "REVIEW_QUEUE_EMPTY_PENDING_TRANSITION",
+  "LEARNING_NO_ELIGIBLE_CARDS",
+  "LEARNING_ALL_ON_COOLDOWN",
+] as const;
+
+const ERROR_REASONS = [
+  "SESSION_MISSING_BATTLE_STATE",
+  "LEARNING_FORCED_CARD_INELIGIBLE",
+  "INVALID_SESSION_MODE",
+] as const;
+
+export type NextSessionCardNoCardReason = (typeof NO_CARD_REASONS)[number];
+export type NextSessionCardErrorReason = (typeof ERROR_REASONS)[number];
+
+/**
+ * The full result contract of `get_next_session_card()`
+ * (supabase/migrations/20260924010000_get_next_session_card.sql). Every
+ * variant is a normal, expected outcome the Session UI must handle -- none
+ * of them indicate a thrown/RPC-level failure (that remains a thrown
+ * Error from this function, per the pattern below).
+ */
+export type NextSessionCard =
+  | {
+      readonly status: "ok";
+      readonly sessionId: string;
+      readonly sessionMode: "review" | "learning";
+      readonly cardId: string;
+      readonly front: string;
+      readonly back: string;
+      readonly enemyType: EnemyId;
+      readonly enemyHp: number;
+      readonly enemyMaxHp: number;
+      readonly combo: number;
+    }
+  | { readonly status: "not_found" }
+  | { readonly status: "no_card"; readonly reason: NextSessionCardNoCardReason }
+  | { readonly status: "error"; readonly reason: NextSessionCardErrorReason };
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+const ENEMY_IDS = ["enemy_a", "enemy_b", "enemy_c"] as const;
+function isEnemyId(value: unknown): value is EnemyId {
+  return typeof value === "string" && (ENEMY_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Validates/normalizes the RPC's raw `jsonb` result into `NextSessionCard`
+ * -- deliberately does not use a bare `as` cast (unlike `startOrResumeSession`/
+ * `finishSession` above, which trust a `returns public.sessions` Postgres row
+ * type). This RPC returns a hand-built `jsonb` envelope with several
+ * possible shapes (docs/DATABASE_SCHEMA.md-style: see the migration's own
+ * header comment), so malformed/unexpected output must be caught here
+ * rather than silently reaching the Session UI as if it were a valid
+ * `"ok"` card. Throws on anything that does not match a known shape --
+ * exactly like the "genuine database failure" case elsewhere in this
+ * module, not a normal application-level outcome.
+ */
+function parseNextSessionCard(data: unknown): NextSessionCard {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error("getNextSessionCard: malformed RPC result (not a JSON object)");
+  }
+
+  const row = data as Record<string, unknown>;
+  const status = row.status;
+
+  if (status === "not_found") {
+    return { status: "not_found" };
+  }
+
+  if (status === "no_card") {
+    if (!NO_CARD_REASONS.includes(row.reason as NextSessionCardNoCardReason)) {
+      throw new Error(`getNextSessionCard: unrecognized no_card reason: ${JSON.stringify(row.reason)}`);
+    }
+    return { status: "no_card", reason: row.reason as NextSessionCardNoCardReason };
+  }
+
+  if (status === "error") {
+    if (!ERROR_REASONS.includes(row.reason as NextSessionCardErrorReason)) {
+      throw new Error(`getNextSessionCard: unrecognized error reason: ${JSON.stringify(row.reason)}`);
+    }
+    return { status: "error", reason: row.reason as NextSessionCardErrorReason };
+  }
+
+  if (status !== "ok") {
+    throw new Error(`getNextSessionCard: unrecognized status: ${JSON.stringify(status)}`);
+  }
+
+  if (
+    !isNonEmptyString(row.session_id) ||
+    (row.session_mode !== "review" && row.session_mode !== "learning") ||
+    !isNonEmptyString(row.card_id) ||
+    typeof row.front !== "string" ||
+    typeof row.back !== "string" ||
+    !isEnemyId(row.enemy_type) ||
+    !isFiniteNumber(row.enemy_hp) ||
+    !isFiniteNumber(row.enemy_max_hp) ||
+    !isFiniteNumber(row.combo)
+  ) {
+    throw new Error(`getNextSessionCard: malformed "ok" result: ${JSON.stringify(row)}`);
+  }
+
+  return {
+    status: "ok",
+    sessionId: row.session_id,
+    sessionMode: row.session_mode,
+    cardId: row.card_id,
+    front: row.front,
+    back: row.back,
+    enemyType: row.enemy_type,
+    enemyHp: row.enemy_hp,
+    enemyMaxHp: row.enemy_max_hp,
+    combo: row.combo,
+  };
+}
+
+/**
+ * Reads the authoritative next answerable card for the caller's own
+ * active session via `get_next_session_card()` -- a read-only SECURITY
+ * INVOKER RPC (never service-role) that replicates
+ * `commit_answer_transaction()`'s exact Review/Learning eligibility rules
+ * in Postgres, so this module never re-implements queue-selection logic
+ * in TypeScript. Like every other function in this file, identity comes
+ * entirely from the caller's own authenticated Supabase session -- there
+ * is no `userId` parameter for a caller to pass, and none is forwarded to
+ * the RPC either (`get_next_session_card(p_session_id)` derives the
+ * caller from `auth.uid()` internally).
+ *
+ * Never throws for a "normal" outcome (not_found / no_card / error) --
+ * only for a genuine RPC failure or a malformed result shape. Callers must
+ * branch on `.status`.
+ */
+export async function getNextSessionCard(sessionId: string): Promise<NextSessionCard> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("get_next_session_card", {
+    p_session_id: sessionId,
+  });
+
+  if (error) {
+    throw new Error("Failed to load next session card", { cause: error });
+  }
+
+  return parseNextSessionCard(data);
+}
