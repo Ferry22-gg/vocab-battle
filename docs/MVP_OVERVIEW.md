@@ -95,8 +95,8 @@ Three enemy types are used in the MVP.
 Initial balance:
 
 - Enemy A: 90 HP
-- Enemy B: 105 HP
-- Enemy C: 120 HP
+- Enemy B: 110 HP
+- Enemy C: 160 HP
 - Base damage: random 24–28
 - Combo cap: x10
 - Critical chance: 5%

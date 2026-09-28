@@ -733,8 +733,8 @@ Internal stable identifiers only -- not display names or art labels (those are m
 | `current_enemy_type` | Initial HP |
 |---|---:|
 | `enemy_a` | 90 |
-| `enemy_b` | 105 |
-| `enemy_c` | 120 |
+| `enemy_b` | 110 |
+| `enemy_c` | 160 |
 
 ### Initial enemy and Daily Goal snapshot (new sessions)
 

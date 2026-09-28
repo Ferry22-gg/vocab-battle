@@ -645,8 +645,8 @@ Enemy spawn:
 Initial HP:
 
 - Enemy A: 90
-- Enemy B: 105
-- Enemy C: 120
+- Enemy B: 110
+- Enemy C: 160
 
 Do not implement:
 

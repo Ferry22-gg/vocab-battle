@@ -15,7 +15,7 @@ describe("toSessionCardUiState", () => {
       back: "遍在する",
       enemyType: "enemy_b",
       enemyHp: 50,
-      enemyMaxHp: 105,
+      enemyMaxHp: 110,
       combo: 3,
     };
 
@@ -29,7 +29,7 @@ describe("toSessionCardUiState", () => {
         back: "遍在する",
         enemyType: "enemy_b",
         enemyHp: 50,
-        enemyMaxHp: 105,
+        enemyMaxHp: 110,
         combo: 3,
       },
     });

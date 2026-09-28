@@ -118,7 +118,7 @@ describe("getActiveSessionById", () => {
       current_combo: 3,
       current_enemy_type: "enemy_b",
       current_enemy_hp: 50,
-      current_enemy_max_hp: 105,
+      current_enemy_max_hp: 110,
       learning_draw_index: 7,
     };
     const { chain } = createQueryChainMock({ data: row, error: null });
@@ -201,7 +201,7 @@ describe("getNextSessionCard", () => {
       back: "遍在する",
       enemy_type: "enemy_b",
       enemy_hp: 50,
-      enemy_max_hp: 105,
+      enemy_max_hp: 110,
       combo: 3,
     };
     const rpc = vi.fn().mockResolvedValue({ data: okRow, error: null });
@@ -216,7 +216,7 @@ describe("getNextSessionCard", () => {
       back: "遍在する",
       enemyType: "enemy_b",
       enemyHp: 50,
-      enemyMaxHp: 105,
+      enemyMaxHp: 110,
       combo: 3,
     });
   });
@@ -232,7 +232,7 @@ describe("getNextSessionCard", () => {
         // back is missing
         enemy_type: "enemy_b",
         enemy_hp: 50,
-        enemy_max_hp: 105,
+        enemy_max_hp: 110,
         combo: 3,
       },
       error: null,

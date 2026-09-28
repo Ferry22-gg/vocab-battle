@@ -121,8 +121,8 @@ const BATTLE_RESULT_LETHAL: BattleCalculationResult = {
   enemyHpAfter: 0,
   enemyDefeated: true,
   newEnemyType: "enemy_c",
-  newEnemyMaxHp: 120,
-  newEnemyHp: 120,
+  newEnemyMaxHp: 160,
+  newEnemyHp: 160,
 };
 
 const XP_EVENTS = [
@@ -149,8 +149,8 @@ const FRESH_SESSION_NON_LETHAL = {
 
 const FRESH_SESSION_LETHAL = {
   current_enemy_type: "enemy_c",
-  current_enemy_max_hp: 120,
-  current_enemy_hp: 120,
+  current_enemy_max_hp: 160,
+  current_enemy_hp: 160,
 } as unknown as CommittedSessionRow;
 
 const FRESH_PROFILE = {
@@ -540,8 +540,8 @@ describe("runSubmitAnswer: fresh success", () => {
     if (!result.ok || result.data.isReplay) return;
     expect(result.data.enemyDefeated).toBe(true);
     expect(result.data.newEnemyType).toBe("enemy_c");
-    expect(result.data.newEnemyMaxHp).toBe(120);
-    expect(result.data.newEnemyHp).toBe(120);
+    expect(result.data.newEnemyMaxHp).toBe(160);
+    expect(result.data.newEnemyHp).toBe(160);
   });
 });
 

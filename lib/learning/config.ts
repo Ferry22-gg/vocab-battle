@@ -146,8 +146,8 @@ export const COMBO_BONUS_TIERS = [
 
 export const ENEMY_CONFIG = {
   enemy_a: { initialHp: 90 },
-  enemy_b: { initialHp: 105 },
-  enemy_c: { initialHp: 120 },
+  enemy_b: { initialHp: 110 },
+  enemy_c: { initialHp: 160 },
 } as const;
 
 export type EnemyId = keyof typeof ENEMY_CONFIG;
