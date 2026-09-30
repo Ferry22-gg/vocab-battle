@@ -12,9 +12,13 @@ import { createQueryChainMock } from "./helpers";
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 
 const { createClient } = await import("@/lib/supabase/server");
-const { startOrResumeSession, finishSession, getActiveSessionById, getNextSessionCard } = await import(
-  "@/lib/sessions/dal"
-);
+const {
+  startOrResumeSession,
+  finishSession,
+  getActiveSessionById,
+  getActiveSessionForCurrentUser,
+  getNextSessionCard,
+} = await import("@/lib/sessions/dal");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -133,6 +137,44 @@ describe("getActiveSessionById", () => {
     vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
 
     await expect(getActiveSessionById("session-1")).rejects.toMatchObject({
+      message: expect.not.stringContaining("connection reset"),
+      cause: dbError,
+    });
+  });
+});
+
+describe("getActiveSessionForCurrentUser", () => {
+  it("filters by status=active only, with no id filter, scoped otherwise by RLS", async () => {
+    const { chain, calls } = createQueryChainMock({ data: null, error: null });
+    vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
+
+    await getActiveSessionForCurrentUser();
+
+    const eqCalls = calls.filter((c) => c.method === "eq");
+    expect(eqCalls).toEqual([{ method: "eq", args: ["status", "active"] }]);
+    expect(calls.some((c) => c.method === "maybeSingle")).toBe(true);
+  });
+
+  it("returns null when the caller has no active session", async () => {
+    const { chain } = createQueryChainMock({ data: null, error: null });
+    vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
+
+    await expect(getActiveSessionForCurrentUser()).resolves.toBeNull();
+  });
+
+  it("returns the row when the caller has an active session", async () => {
+    const { chain } = createQueryChainMock({ data: { id: "session-1" }, error: null });
+    vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
+
+    await expect(getActiveSessionForCurrentUser()).resolves.toEqual({ id: "session-1" });
+  });
+
+  it("throws a server-safe error on a genuine DB failure", async () => {
+    const dbError = { message: "connection reset", code: "08006" };
+    const { chain } = createQueryChainMock({ data: null, error: dbError });
+    vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
+
+    await expect(getActiveSessionForCurrentUser()).rejects.toMatchObject({
       message: expect.not.stringContaining("connection reset"),
       cause: dbError,
     });

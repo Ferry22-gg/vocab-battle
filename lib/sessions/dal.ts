@@ -135,6 +135,35 @@ export async function getActiveSessionById(sessionId: string): Promise<SessionRo
   return data as SessionRow | null;
 }
 
+/**
+ * Read-only check for whether the caller currently has an active session,
+ * without starting or resuming one -- unlike startOrResumeSession(), this
+ * never calls the RPC and never creates a session as a side effect. Exists
+ * for Home's Start/Resume Session label (P3): Home must know whether to
+ * say "Resume" without mutating anything just by being viewed.
+ *
+ * No `id` filter is passed -- `status = 'active'` alone, scoped entirely by
+ * RLS (`sessions_select_own_or_admin`), same reasoning as
+ * getActiveSessionById above. The product invariant that a tester has at
+ * most one active session at a time (start_or_resume_session() always
+ * resumes rather than creating a second) is what makes `maybeSingle()`
+ * safe here rather than `limit(1)` + array handling.
+ */
+export async function getActiveSessionForCurrentUser(): Promise<Pick<SessionRow, "id"> | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("id")
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error("Failed to check for an active session", { cause: error });
+  }
+
+  return data as Pick<SessionRow, "id"> | null;
+}
+
 // =============================================================================
 // getNextSessionCard() -- Phase F0 (docs/DATABASE_SCHEMA.md 4.4/4.6/4.7/9.1/
 // 10.3/11)
