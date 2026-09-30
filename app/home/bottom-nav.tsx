@@ -1,42 +1,47 @@
 import Link from "next/link";
 
 /**
- * Bottom navigation (P3 spec section 9): Home / Decks / Stats only.
- * Neither /decks nor /stats exists yet in this codebase (confirmed by
- * repo audit -- no app/decks or app/stats route). Per spec ("do not build
- * a fake full feature ... use the smallest safe project-consistent
- * placeholder"), those two render as visibly present but inert, disabled
- * buttons rather than as `<Link>`s to a 404, or a Decks-selection flow
- * duplicated from onboarding.
+ * Shared bottom navigation (P3 spec section 9): Home / Decks / Stats only,
+ * used by both Home (app/page.tsx) and Decks (app/decks/page.tsx) so the
+ * two routes share one visual system rather than duplicating it. /stats
+ * does not exist yet in this codebase, so -- per spec ("do not build a
+ * fake full feature ... use the smallest safe project-consistent
+ * placeholder") -- it renders as a visibly present but inert, disabled
+ * button rather than a `<Link>` to a 404.
+ *
+ * `active` is passed explicitly by each Server Component page rather than
+ * derived from `usePathname()`, so this stays server-renderable and never
+ * needs to be a Client Component itself.
  */
 const ITEMS = [
-  { key: "home", label: "Home", icon: "🏠", href: "/" as const, active: true },
-  { key: "decks", label: "Decks", icon: "🗂️", href: null, active: false },
-  { key: "stats", label: "Stats", icon: "📊", href: null, active: false },
-];
+  { key: "home", label: "Home", icon: "🏠", href: "/" as const },
+  { key: "decks", label: "Decks", icon: "🗂️", href: "/decks" as const },
+  { key: "stats", label: "Stats", icon: "📊", href: null },
+] as const;
 
-export function BottomNav() {
+export function BottomNav({ active }: { readonly active: "home" | "decks" | "stats" }) {
   return (
     <nav
       aria-label="Primary"
       className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-md px-3 pb-[calc(env(safe-area-inset-bottom,0px)+10px)] pt-2"
     >
       <div className="flex items-center justify-around rounded-3xl border border-white/10 bg-emerald-950/85 px-2 py-2.5 shadow-xl backdrop-blur-sm">
-        {ITEMS.map((item) =>
-          item.href ? (
+        {ITEMS.map((item) => {
+          const isActive = item.key === active;
+          return item.href ? (
             <Link
               key={item.key}
               href={item.href}
-              aria-current={item.active ? "page" : undefined}
+              aria-current={isActive ? "page" : undefined}
               className={`flex flex-1 flex-col items-center gap-1 rounded-2xl px-3 py-2 text-sm font-semibold ${
-                item.active ? "text-amber-300" : "text-emerald-100/70"
+                isActive ? "text-amber-300" : "text-emerald-100/70"
               }`}
             >
               <span aria-hidden="true" className="text-2xl">
                 {item.icon}
               </span>
               {item.label}
-              {item.active && <span aria-hidden="true" className="mt-0.5 h-0.5 w-5 rounded-full bg-amber-300" />}
+              {isActive && <span aria-hidden="true" className="mt-0.5 h-0.5 w-5 rounded-full bg-amber-300" />}
             </Link>
           ) : (
             <button
@@ -51,8 +56,8 @@ export function BottomNav() {
               </span>
               {item.label}
             </button>
-          ),
-        )}
+          );
+        })}
       </div>
     </nav>
   );

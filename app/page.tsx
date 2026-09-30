@@ -54,7 +54,7 @@ export default async function HomePage() {
         </div>
       </div>
 
-      <BottomNav />
+      <BottomNav active="home" />
     </div>
   );
 }
