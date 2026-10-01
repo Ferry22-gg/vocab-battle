@@ -40,6 +40,8 @@ export const RLS_TESTER_B = tester("910"); // scenario 14: RLS isolation
 export const NEXT_CARD_TESTER = tester("911"); // scenario 16: get_next_session_card()
 export const WRONG_FLOOR_TESTER = tester("912"); // scenario 17: Learning Wrong reappearance floor
 export const DECK_SELECTION_TESTER = tester("913"); // P3 Decks: select_deck() / deck-switch session behavior
+export const STATS_TESTER_A = tester("914"); // P3 Stats: aggregation across daily_user_stats/profiles/user_card_progress
+export const STATS_TESTER_B = tester("915"); // P3 Stats: cross-tester isolation
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -55,6 +57,8 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   NEXT_CARD_TESTER,
   WRONG_FLOOR_TESTER,
   DECK_SELECTION_TESTER,
+  STATS_TESTER_A,
+  STATS_TESTER_B,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;
