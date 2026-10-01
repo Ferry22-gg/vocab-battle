@@ -108,3 +108,37 @@ export const NEAR_DUE_END_PROGRESS = 1.0;
 
 /** Section 17: the Due-card weight formula's cap -- "Use: w_due(i) = min(3.0, sqrt((1 - R_i) / (1 - r_d)))". */
 export const DUE_WEIGHT_CAP = 3.0;
+
+// ---------------------------------------------------------------------------
+// Scheduler (section 7, 20, 22.2) -- Phase 6
+// ---------------------------------------------------------------------------
+
+/** Section 7 (critical_due_max_global_gap): "no Critical Due card has been presented in the last 5 global questions" -- see lib/learning-engine/scheduler/position.ts's hasCriticalDueAppearedRecently for the exact (off-by-one-reviewed) boundary this gates. */
+export const CRITICAL_DUE_GLOBAL_QUESTION_WINDOW = 5;
+
+/** Section 20: due_count tier boundaries ("Equivalent with target 20: 1-9 Due cards" / "10+ Due cards"). due_count === 0 is its own tier (ACTIVE_FOCUS, no named constant needed -- it's just zero); this is the review-pressure floor. */
+export const DUE_TIER_REVIEW_PRESSURE_THRESHOLD = 10;
+
+/**
+ * Section 20.1/20.2: the six Dynamic Source Weight regimes, keyed by due
+ * tier, before (section 20.1) and after (section 20.2) Daily Goal
+ * completion. Literal spec tables -- do not derive these from a formula;
+ * the spec gives exact decimal weights, including the deliberately
+ * unchanged Review Pressure row post-goal ("Unchanged").
+ */
+export const PRE_GOAL_SOURCE_WEIGHTS = {
+  ACTIVE_FOCUS: { active: 0.9, due: 0.0, near: 0.1 },
+  BALANCED: { active: 0.7, due: 0.25, near: 0.05 },
+  REVIEW_PRESSURE: { active: 0.5, due: 0.48, near: 0.02 },
+} as const;
+
+export const POST_GOAL_SOURCE_WEIGHTS = {
+  ACTIVE_FOCUS: { active: 0.8, due: 0.0, near: 0.2 },
+  BALANCED: { active: 0.75, due: 0.15, near: 0.1 },
+  // Section 20.2: "Unchanged" from the pre-goal Review Pressure row --
+  // "the goal overlay must never suppress a genuinely large review
+  // backlog." Written out explicitly rather than referencing
+  // PRE_GOAL_SOURCE_WEIGHTS.REVIEW_PRESSURE, so this table reads as a
+  // complete, standalone source of truth matching the spec's own layout.
+  REVIEW_PRESSURE: { active: 0.5, due: 0.48, near: 0.02 },
+} as const;
