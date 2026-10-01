@@ -142,3 +142,6 @@ export const POST_GOAL_SOURCE_WEIGHTS = {
   // complete, standalone source of truth matching the spec's own layout.
   REVIEW_PRESSURE: { active: 0.5, due: 0.48, near: 0.02 },
 } as const;
+
+/** Section 7 (active_starvation_max_active_source_draws): an eligible Active card that survives this many Active-source selections without being chosen must be guaranteed on the next Active slot (section 22.3) -- Phase 6C only exposes the raw candidate structure for this; the guarantee itself is Phase 6D. */
+export const ACTIVE_STARVATION_MAX_DRAWS = 40;

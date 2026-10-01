@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createEmptyCard } from "ts-fsrs";
+import type { Card } from "ts-fsrs";
 
-import { classifyDueSource, computeIntervalProgress } from "@/lib/learning-engine/fsrs/due-classification";
+import { classifyDueSource, computeIntervalProgress, deriveCardIntervalProgress } from "@/lib/learning-engine/fsrs/due-classification";
 
 /**
  * Unit tests for docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md section 16.1
@@ -59,5 +61,31 @@ describe("computeIntervalProgress (section 16.1)", () => {
 
   it("is deterministic/pure: identical inputs always produce identical output", () => {
     expect(computeIntervalProgress(7.5, 10)).toBe(computeIntervalProgress(7.5, 10));
+  });
+});
+
+describe("deriveCardIntervalProgress (Phase 6C bridge: ts-fsrs Card -> interval progress)", () => {
+  it("computes progress in days, matching scheduled_days's own unit", () => {
+    const card: Card = { ...createEmptyCard(new Date("2026-01-01T00:00:00.000Z")), last_review: new Date("2026-01-01T00:00:00.000Z"), scheduled_days: 10 };
+    const now = new Date("2026-01-08T00:00:00.000Z"); // 7 days later
+    expect(deriveCardIntervalProgress(card, now)).toBeCloseTo(0.7);
+  });
+
+  it("a never-reviewed card (last_review undefined, State.New) returns null, not 0 or NaN", () => {
+    const neverReviewed = createEmptyCard(new Date("2026-01-01T00:00:00.000Z"));
+    expect(neverReviewed.last_review).toBeUndefined();
+    expect(deriveCardIntervalProgress(neverReviewed, new Date("2026-01-08T00:00:00.000Z"))).toBeNull();
+  });
+
+  it("a null result classifies conservatively as STRONG_OUTSIDE via classifyDueSource", () => {
+    const neverReviewed = createEmptyCard(new Date("2026-01-01T00:00:00.000Z"));
+    const progress = deriveCardIntervalProgress(neverReviewed, new Date("2026-01-08T00:00:00.000Z"));
+    expect(classifyDueSource(progress)).toBe("STRONG_OUTSIDE");
+  });
+
+  it("is deterministic/pure", () => {
+    const card: Card = { ...createEmptyCard(new Date("2026-01-01T00:00:00.000Z")), last_review: new Date("2026-01-01T00:00:00.000Z"), scheduled_days: 10 };
+    const now = new Date("2026-01-08T00:00:00.000Z");
+    expect(deriveCardIntervalProgress(card, now)).toBe(deriveCardIntervalProgress(card, now));
   });
 });
