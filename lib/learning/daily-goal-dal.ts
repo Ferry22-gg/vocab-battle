@@ -26,8 +26,13 @@ export interface DailyGoalProgress {
   readonly completed: boolean;
 }
 
-/** `YYYY-MM-DD` for "today" in Asia/Tokyo, matching `daily_user_stats.stat_date`'s documented calendar. */
-function todayInTokyo(): string {
+/**
+ * `YYYY-MM-DD` for "today" in Asia/Tokyo, matching `daily_user_stats.stat_date`'s
+ * documented calendar. Exported so other modules sharing this exact
+ * day-boundary convention (e.g. lib/stats/dal.ts's weekly activity window)
+ * reuse this single implementation rather than re-deriving it.
+ */
+export function todayInTokyo(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo" }).format(new Date());
 }
 

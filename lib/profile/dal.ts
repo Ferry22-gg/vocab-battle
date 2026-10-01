@@ -15,28 +15,31 @@
 
 import { createClient } from "@/lib/supabase/server";
 
-const PROFILE_STATS_COLUMNS = "total_xp, level, current_streak";
+const PROFILE_STATS_COLUMNS = "total_xp, level, current_streak, total_enemies_defeated";
 
 export interface ProfileStats {
   readonly totalXp: number;
   readonly level: number;
   readonly currentStreak: number;
+  /** Lifetime enemy-defeat counter (docs/DATABASE_SCHEMA.md 4.1) -- Home doesn't use this field, Stats does. */
+  readonly totalEnemiesDefeated: number;
 }
 
 /**
- * Reads the caller's own current XP/level/streak. Only ever called after
- * an auth gate (e.g. requireOnboardedTester()) has already established the
- * caller is an authenticated tester with a profile row, so `maybeSingle()`
- * returning `null` here indicates a genuine invariant violation, not a
- * normal "no profile yet" case -- callers should let that surface as a
- * thrown error rather than silently falling back to zeroed stats.
+ * Reads the caller's own current XP/level/streak/lifetime-enemies-defeated.
+ * Only ever called after an auth gate (e.g. requireOnboardedTester()) has
+ * already established the caller is an authenticated tester with a profile
+ * row, so `maybeSingle()` returning `null` here indicates a genuine
+ * invariant violation, not a normal "no profile yet" case -- callers should
+ * let that surface as a thrown error rather than silently falling back to
+ * zeroed stats.
  */
 export async function getProfileStats(): Promise<ProfileStats> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("profiles")
     .select(PROFILE_STATS_COLUMNS)
-    .maybeSingle<{ total_xp: number; level: number; current_streak: number }>();
+    .maybeSingle<{ total_xp: number; level: number; current_streak: number; total_enemies_defeated: number }>();
 
   if (error) {
     throw new Error("Failed to load profile stats", { cause: error });
@@ -50,5 +53,6 @@ export async function getProfileStats(): Promise<ProfileStats> {
     totalXp: data.total_xp,
     level: data.level,
     currentStreak: data.current_streak,
+    totalEnemiesDefeated: data.total_enemies_defeated,
   };
 }
