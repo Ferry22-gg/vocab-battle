@@ -76,3 +76,16 @@ export const AGING_MULTIPLIER_BUCKETS = [
   { minDraws: 15, multiplier: 1.3 },
   { minDraws: 20, multiplier: 1.4 },
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Repair scheduler (section 7, 12.2, 22.1) -- Phase 4
+// ---------------------------------------------------------------------------
+
+/** Section 12.2/7 (wrong_retry_min_gap): a repair may never be presented before this many full intervening cards have passed. */
+export const WRONG_RETRY_MIN_GAP = 3;
+
+/** Section 12.2/22.1/7 (wrong_retry_hard_cap): a repair may never be delayed beyond this many full intervening cards -- the authoritative ceiling, independent of the sampled target gap. */
+export const WRONG_RETRY_HARD_CAP = 6;
+
+/** Section 12.2: "sample a target repair offset uniformly from {3,4,5,6}" -- the literal set, not merely the [MIN_GAP, HARD_CAP] range (they happen to coincide here, but this spells out the spec's own enumerated set rather than relying on that coincidence). */
+export const REPAIR_GAP_OPTIONS = [3, 4, 5, 6] as const;
