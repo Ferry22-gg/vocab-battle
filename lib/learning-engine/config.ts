@@ -89,3 +89,22 @@ export const WRONG_RETRY_HARD_CAP = 6;
 
 /** Section 12.2: "sample a target repair offset uniformly from {3,4,5,6}" -- the literal set, not merely the [MIN_GAP, HARD_CAP] range (they happen to coincide here, but this spells out the spec's own enumerated set rather than relying on that coincidence). */
 export const REPAIR_GAP_OPTIONS = [3, 4, 5, 6] as const;
+
+// ---------------------------------------------------------------------------
+// FSRS wiring (section 7, 14.3, 16-18, 27.2) -- Phase 5
+// ---------------------------------------------------------------------------
+
+/** Section 14.3/7 (desired_retention_default): used unless the user's persisted pain_point overrides it. */
+export const DEFAULT_DESIRED_RETENTION = 0.9;
+
+/** Section 14.3/27.2/7 (desired_retention_retention_loss): used only when user_learning_preferences.pain_point = 'retention_loss'. Not an inference that the user has poor memory -- a preference prior (section 14.3). */
+export const RETENTION_LOSS_DESIRED_RETENTION = 0.92;
+
+/** Section 16.1/7 (near_due_start_progress): interval_progress at/above this (and below 1.0) is NEAR_DUE. */
+export const NEAR_DUE_START_PROGRESS = 0.75;
+
+/** Section 16.1/7 (near_due_end_progress): interval_progress at/above this is FSRS_DUE, not NEAR_DUE. */
+export const NEAR_DUE_END_PROGRESS = 1.0;
+
+/** Section 17: the Due-card weight formula's cap -- "Use: w_due(i) = min(3.0, sqrt((1 - R_i) / (1 - r_d)))". */
+export const DUE_WEIGHT_CAP = 3.0;

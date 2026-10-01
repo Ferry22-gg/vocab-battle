@@ -12,6 +12,24 @@
  * from `user_card_progress` / recent `answer_events` rows) and for doing
  * anything with the returned rating (calling ts-fsrs, computing battle
  * damage, updating card status).
+ *
+ * ---------------------------------------------------------------------
+ * LEGACY MVP module -- not used by Learning Engine v1
+ * ---------------------------------------------------------------------
+ * docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md section 1.4 is explicit:
+ * "Do not expose Again/Hard/Good/Easy to the learner" and the v1 binary
+ * FSRS mapping is WRONG -> Again, CORRECT -> Good only -- response time
+ * and history may remain logged as raw telemetry for future inference,
+ * but must never influence the FSRS rating itself. This module's Hard/
+ * Easy inference conflicts with that rule and is NOT used by any v1
+ * engine code (lib/learning-engine/**) -- see
+ * lib/learning-engine/fsrs/rating.ts's mapAnswerToFsrsGrade for the v1-
+ * authoritative mapping. This file remains unchanged and still backs the
+ * existing legacy runtime path (submitAnswer() ->
+ * commit_answer_transaction()), which stays operational until the v1
+ * engine's cutover (a later phase) -- it is not a silent conflict, it is
+ * the deliberate, documented boundary between the two engines during
+ * this transition period.
  */
 
 import { Rating } from "ts-fsrs";
