@@ -501,10 +501,12 @@ This avoids an asymmetric Fresh rule where an initial first-try Correct would gr
 
 # 13. Repair of long-term failures / Relearning
 
-A long-term failure triggers:
+A long-term or Near-Due failure that enters Relearning triggers:
 
 ```text
 card_status = FORGOTTEN
+pool_status = ACTIVE
+relearning_phase = REPAIR_PENDING
 UI = RELEARNING
 ```
 
@@ -514,6 +516,7 @@ Then:
 Wrong
 -> corrective feedback
 -> Repair Correct within 3–6 cards
+-> relearning_phase = SPACED_CONFIRMATION_PENDING
 -> at least 5 intervening cards
 -> Spaced Correct
 -> relearning complete
@@ -668,6 +671,8 @@ On Near-Due Wrong:
 ```text
 FSRS -> Again
 card_status -> FORGOTTEN
+pool_status -> ACTIVE
+relearning_phase -> REPAIR_PENDING
 fsrs_review_correct_streak -> 0
 fsrs_review_correct_count -> preserve
 start Relearning repair path
@@ -1607,6 +1612,7 @@ The implementation must preserve these invariants.
 - `NEW` may be Active, but becomes `LEARNING` only when first presented.
 - `ACQUIRED` is not equivalent to `LEARNED`.
 - `FORGOTTEN` is not permanent; it is a relearning state.
+- `FORGOTTEN` cards in the Relearning path have `pool_status = ACTIVE`.
 - `has_achieved_full_mastery` never becomes false after first unlock.
 - New cards added after Full Mastery start with `has_ever_been_mastered = false`.
 

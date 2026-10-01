@@ -102,3 +102,33 @@ export const INITIAL_CARD_STATE: LearningEngineCardState = {
   fsrsReviewCorrectCount: 0,
   fsrsReviewCorrectStreak: 0,
 };
+
+/**
+ * Phase 3 (Active Pool): `LearningEngineCardState` plus the two
+ * position/counter fields the Active Pool's eligibility and priority
+ * rules need -- exactly the "wider SchedulableCardState" this file's own
+ * header comment anticipated, rather than folding these into
+ * LearningEngineCardState itself (Phase 2's transition functions still
+ * neither read nor write either field).
+ */
+export interface ActivePoolCardState extends LearningEngineCardState {
+  /**
+   * Section 11.1/29.1: set by a normal stage-advancing Correct to
+   * (the position at that Correct) + CORRECT_MIN_GAP (lib/learning-engine/
+   * active-priority.ts's applyCorrectCooldown); null means no cooldown is
+   * currently in force. Cleared implicitly once the stored position is
+   * reached -- see active-priority.ts's isEligibleForNormalSelection.
+   */
+  readonly correctCooldownUntilPosition: number | null;
+
+  /**
+   * Section 19.1: Active-source selections survived since this card last
+   * became eligible (i.e. since it was last selected, or since it was
+   * newly admitted to Active -- see active-priority.ts's
+   * advanceActiveDrawCounters for why no separate "reset on cooldown
+   * clearing" step is needed beyond that). Feeds both the soft aging
+   * multiplier (section 19.1) and -- in a later phase -- the hard 40-draw
+   * starvation guarantee (section 22.3).
+   */
+  readonly activeDrawsSinceEligible: number;
+}

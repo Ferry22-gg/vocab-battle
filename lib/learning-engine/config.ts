@@ -6,18 +6,15 @@
  * only, mirroring the existing lib/learning/config.ts convention (no
  * inference, no DB access, no scheduling/selection logic).
  *
- * This file intentionally only defines the subset of section 7's
- * parameters that Phase 2's pure transition functions (lib/learning-
- * engine/transitions.ts) actually consume. Every other v1 parameter
- * (active_pool_target, fresh_card_limit, correct_min_gap,
- * wrong_retry_min_gap/hard_cap, stage weights, near_due_*,
- * critical_due_*, active_starvation_max_active_source_draws,
+ * This file defines the subset of section 7's parameters that Phase 2's
+ * pure transition functions and Phase 3's Active Pool functions actually
+ * consume. Every other v1 parameter (wrong_retry_min_gap/hard_cap,
+ * near_due_*, critical_due_*, active_starvation_max_active_source_draws,
  * streak_minimum_enemy_defeats, daily_goal_enemy_defeats) belongs to
- * later phases (Active Pool, repair scheduler, FSRS/near-due adapter,
- * source scheduler, Daily Goal/streak wiring) and is deliberately NOT
- * duplicated here ahead of the module that will actually use it --
- * adding it now would just be a second, easily-drifting copy with no
- * reader.
+ * later phases (the repair scheduler, FSRS/near-due adapter, source
+ * scheduler, Daily Goal/streak wiring) and is deliberately NOT duplicated
+ * here ahead of the module that will actually use it -- adding it now
+ * would just be a second, easily-drifting copy with no reader.
  */
 
 /**
@@ -44,3 +41,38 @@ export const LEARNING_ENGINE_POLICY_VERSION = "learning-engine-v1.0";
  */
 export const MASTERY_CORRECT_COUNT_REQUIRED = 3;
 export const MASTERY_CORRECT_STREAK_REQUIRED = 2;
+
+// ---------------------------------------------------------------------------
+// Active Pool (section 7, 8, 11.1, 19, 19.1) -- Phase 3
+// ---------------------------------------------------------------------------
+
+/** Section 8.1: the saturated Active Pool target. A target, not a requirement that the pool instantly contain this many cards. */
+export const ACTIVE_POOL_TARGET_SIZE = 20;
+
+/** Section 8.2: at most this many cards may simultaneously be Fresh (admitted to Active but not yet having achieved a first successful retrieval). */
+export const FRESH_CARD_LIMIT = 6;
+
+/** Section 11.1/7 (correct_min_gap): a card is ineligible for this many intervening cards after a normal stage-advancing Correct. */
+export const CORRECT_MIN_GAP = 5;
+
+/** Section 19: base weight per within-day learning stage, before the aging multiplier. Only FRESH/LEARNING_1/LEARNING_2 cards participate in ordinary Active-source weighted selection -- see lib/learning-engine/active-priority.ts. */
+export const STAGE_BASE_WEIGHT = {
+  FRESH: 1.0,
+  LEARNING_1: 1.2,
+  LEARNING_2: 1.1,
+} as const satisfies Record<"FRESH" | "LEARNING_1" | "LEARNING_2", number>;
+
+/**
+ * Section 19.1: the soft aging multiplier, keyed by how many Active-source
+ * selections this card has survived since it last became eligible. Ordered
+ * ascending by `minDraws`; the first bucket whose `minDraws` the draw count
+ * meets or exceeds (scanning from the end) applies -- see
+ * lib/learning-engine/active-priority.ts's agingMultiplier.
+ */
+export const AGING_MULTIPLIER_BUCKETS = [
+  { minDraws: 0, multiplier: 1.0 },
+  { minDraws: 5, multiplier: 1.1 },
+  { minDraws: 10, multiplier: 1.2 },
+  { minDraws: 15, multiplier: 1.3 },
+  { minDraws: 20, multiplier: 1.4 },
+] as const;
