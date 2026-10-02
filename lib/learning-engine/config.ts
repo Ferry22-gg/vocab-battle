@@ -116,6 +116,9 @@ export const DUE_WEIGHT_CAP = 3.0;
 /** Section 7 (critical_due_max_global_gap): "no Critical Due card has been presented in the last 5 global questions" -- see lib/learning-engine/scheduler/position.ts's hasCriticalDueAppearedRecently for the exact (off-by-one-reviewed) boundary this gates. */
 export const CRITICAL_DUE_GLOBAL_QUESTION_WINDOW = 5;
 
+/** Section 7/22.2 (critical_due_R_threshold): a FSRS_DUE card with current Retrievability at or below this is a Critical Due candidate -- see lib/learning-engine/scheduler/interrupts.ts's findCriticalDueInterrupt (Phase 6D). */
+export const CRITICAL_DUE_R_THRESHOLD = 0.6;
+
 /** Section 20: due_count tier boundaries ("Equivalent with target 20: 1-9 Due cards" / "10+ Due cards"). due_count === 0 is its own tier (ACTIVE_FOCUS, no named constant needed -- it's just zero); this is the review-pressure floor. */
 export const DUE_TIER_REVIEW_PRESSURE_THRESHOLD = 10;
 
