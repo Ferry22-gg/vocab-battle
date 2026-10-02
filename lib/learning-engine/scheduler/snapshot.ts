@@ -68,6 +68,19 @@ export interface DeckSchedulerState {
   readonly lastCriticalDuePosition: number | null;
   /** Decision 6: optimistic-concurrency token for the whole snapshot. */
   readonly schedulerRevision: number;
+  /**
+   * Phase 6E addition (first-pass clarification review): the still-not-
+   * yet-presented member cardIds of the currently in-flight randomized
+   * first-pass batch (section 9), in serving order -- null/empty means no
+   * batch is currently in flight (either none has ever started, or the
+   * previous one was fully exhausted). This is genuinely NEW persisted
+   * state with no Phase 1-6D column or field backing it yet; a future
+   * trusted commit path is responsible for actually persisting updates to
+   * it (this snapshot type only describes what one decision reads before
+   * it runs). See lib/learning-engine/scheduler/next-card.ts for the full
+   * creation/consumption/preemption semantics this field supports.
+   */
+  readonly firstPassQueue: readonly string[] | null;
 }
 
 export interface DailyGoalSnapshot {
