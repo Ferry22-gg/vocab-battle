@@ -771,9 +771,12 @@ describe("trace invariants across a long mixed simulation (Phase 6F brief sectio
         expectedPosition += 1;
       }
 
-      // raw weights match the source-policy regime for this trace's own dueCount/dailyGoal.
+      // raw weights match the source-policy regime for this trace's own
+      // dueCount/dailyGoal (this simulation never reaches Post-Mastery mode,
+      // so ordinary mode's computeSourceWeights is always the right
+      // comparison; randomMastered is always 0 in ordinary mode).
       const { weights: expectedRaw } = computeSourceWeights(decision.trace.dueCount, decision.trace.dailyGoalCompleteBefore);
-      expect(decision.trace.sourceWeightsRaw).toEqual(expectedRaw);
+      expect(decision.trace.sourceWeightsRaw).toEqual({ ...expectedRaw, randomMastered: 0 });
 
       // normalized weights never select an empty source.
       if (decision.trace.candidateCounts.active === 0) {

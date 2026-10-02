@@ -55,6 +55,31 @@
  *   consumes an Active-source slot (decision.source is "ACTIVE" for all
  *   of these), so every OTHER eligible ordinary candidate still ages by
  *   one, correctly, with no new logic beyond this composition.
+ *
+ * ---------------------------------------------------------------------
+ * Phase 7 additions
+ * ---------------------------------------------------------------------
+ * - hasAchievedFullMastery/masteredCount are recomputed after every step
+ *   via lib/learning-engine/scheduler/post-mastery-mode.ts's
+ *   computeHasAchievedFullMastery (unchanged), fed the live card set's
+ *   actual LEARNED count -- never derived any other way, and never
+ *   resettable to false once true, matching that function's own
+ *   monotonic contract.
+ * - postMasteryShuffleBag is applied from decision.postMasteryShuffleBagAfter
+ *   exactly like firstPassQueue.
+ * - RANDOM_MASTERED Correct (reviewed correction, Phase 7 brief section
+ *   14): NOT a no-op. Treated as an early/optional FSRS review -- FSRS
+ *   Good via lib/learning-engine/fsrs/lifecycle.ts's
+ *   resolveRandomMasteredCorrect (a plain alias for resolveNearDueCorrect,
+ *   the identical "update FSRS, leave mastery counters and cardState
+ *   otherwise untouched" pattern already used for Near-Due Correct -- not
+ *   a second FSRS implementation). fsrsReviewCorrectCount/Streak remain
+ *   byte-for-byte unchanged; the card stays LEARNED.
+ * - RANDOM_MASTERED Wrong (confirmed policy, Phase 7 brief section 15):
+ *   reuses resolveRandomMasteredWrong (a plain alias for
+ *   resolveLongTermWrong) -- the full long-term lapse lifecycle, same
+ *   severity as an ordinary Due/Near-Due Wrong, never a lighter
+ *   free-play-specific rule.
  */
 
 import {
@@ -69,8 +94,15 @@ import {
   resolveRelearningRepairCorrect,
 } from "@/lib/learning-engine/repair-scheduler";
 import { applyFirstPresentation, applyNormalCorrect, applySpacedCorrect, applyWrong } from "@/lib/learning-engine/transitions";
-import { resolveLongTermWrong, resolveNearDueCorrect, resolveQualifyingFsrsCorrect } from "@/lib/learning-engine/fsrs/lifecycle";
+import {
+  resolveLongTermWrong,
+  resolveNearDueCorrect,
+  resolveQualifyingFsrsCorrect,
+  resolveRandomMasteredCorrect,
+  resolveRandomMasteredWrong,
+} from "@/lib/learning-engine/fsrs/lifecycle";
 import { deriveRetrievability, progressToFsrsCard } from "@/lib/learning-engine/fsrs/adapter";
+import { computeHasAchievedFullMastery } from "@/lib/learning-engine/scheduler/post-mastery-mode";
 import { chooseNextCard, type NextCardDecision, type RandomSource } from "@/lib/learning-engine/scheduler/next-card";
 import type { DailyGoalSnapshot, DeckSchedulerSnapshot, SchedulableCardRow } from "@/lib/learning-engine/scheduler/snapshot";
 import type { RepairObligation } from "@/lib/learning-engine/repair-scheduler";
@@ -118,6 +150,9 @@ export interface SimulationConfig {
   readonly schedulerRevision?: number;
   readonly lastCriticalDuePosition?: number | null;
   readonly firstPassQueue?: readonly string[] | null;
+  /** The deck's initial persisted `has_achieved_full_mastery` -- defaults to false. Auto-advances (monotonically) after every step() via computeHasAchievedFullMastery; never needs to be set true "by hand" for a test that wants to reach unlock organically, but tests exercising an ALREADY-unlocked deck (e.g. a historical lapse scenario) should pass `true` here directly. */
+  readonly hasAchievedFullMastery?: boolean;
+  readonly postMasteryShuffleBag?: readonly string[] | null;
 }
 
 const DEFAULT_NOW = new Date("2026-01-01T00:00:00.000Z");
@@ -138,6 +173,8 @@ export class SchedulerSimulation {
   private schedulerRevision: number;
   private lastCriticalDuePosition: number | null;
   private firstPassQueue: readonly string[] | null;
+  private hasAchievedFullMastery: boolean;
+  private postMasteryShuffleBag: readonly string[] | null;
   private readonly random: RandomSource;
 
   readonly decisions: NextCardDecision[] = [];
@@ -153,6 +190,9 @@ export class SchedulerSimulation {
     this.schedulerRevision = config.schedulerRevision ?? 1;
     this.lastCriticalDuePosition = config.lastCriticalDuePosition ?? null;
     this.firstPassQueue = config.firstPassQueue ?? null;
+    this.hasAchievedFullMastery = config.hasAchievedFullMastery ?? false;
+    this.postMasteryShuffleBag = config.postMasteryShuffleBag ?? null;
+    this.refreshMasteryUnlock();
   }
 
   get position(): number {
@@ -169,6 +209,27 @@ export class SchedulerSimulation {
 
   get criticalDuePosition(): number | null {
     return this.lastCriticalDuePosition;
+  }
+
+  get fullMasteryUnlocked(): boolean {
+    return this.hasAchievedFullMastery;
+  }
+
+  get masteredCount(): number {
+    return this.getAllCards().filter((card) => card.cardStatus === "LEARNED").length;
+  }
+
+  get shuffleBag(): readonly string[] | null {
+    return this.postMasteryShuffleBag;
+  }
+
+  /** Section 3 of the Phase 7 brief: recomputes the monotonic historical unlock from the live card set's current LEARNED count via computeHasAchievedFullMastery (unchanged) -- never any other way. Called once at construction (so a fixture that is already 100% LEARNED unlocks immediately, without requiring the test to also pass hasAchievedFullMastery:true by hand) and again at the end of every step(). */
+  private refreshMasteryUnlock(): void {
+    this.hasAchievedFullMastery = computeHasAchievedFullMastery({
+      currentlyUnlocked: this.hasAchievedFullMastery,
+      masteredCount: this.masteredCount,
+      totalCards: this.cards.size,
+    });
   }
 
   getCard(cardId: string): SchedulableCardRow {
@@ -199,12 +260,13 @@ export class SchedulerSimulation {
       deckState: {
         desiredRetention: this.desiredRetention,
         policyVersion: this.policyVersion,
-        hasAchievedFullMastery: false,
-        masteredCount: 0,
+        hasAchievedFullMastery: this.hasAchievedFullMastery,
+        masteredCount: this.masteredCount,
         schedulerPosition: this.schedulerPosition,
         lastCriticalDuePosition: this.lastCriticalDuePosition,
         schedulerRevision: this.schedulerRevision,
         firstPassQueue: this.firstPassQueue,
+        postMasteryShuffleBag: this.postMasteryShuffleBag,
       },
       dailyGoal: this.dailyGoal,
       cards: this.getAllCards(),
@@ -238,14 +300,16 @@ export class SchedulerSimulation {
       this.setCard(cardId, { ...card, poolStatus: "ACTIVE" });
     }
 
-    // 2. First-pass queue transition.
+    // 2. First-pass queue / Post-Mastery shuffle-bag transitions.
     this.firstPassQueue = decision.firstPassQueueAfter;
+    this.postMasteryShuffleBag = decision.postMasteryShuffleBagAfter;
 
     // 3. A commit always advances the optimistic-concurrency revision,
     // even when no card was ultimately presented.
     this.schedulerRevision += 1;
 
     if (decision.cardId === null) {
+      this.refreshMasteryUnlock();
       return decision;
     }
 
@@ -280,6 +344,11 @@ export class SchedulerSimulation {
     // 7. Apply the scripted answer through existing pure transition/FSRS/
     // repair helpers -- never reimplemented here.
     this.applyScriptedAnswer(decision, resolvedAnswer, positionAtDrawTime, newPosition);
+
+    // 8. Section 3 of the Phase 7 brief: re-evaluate the historical unlock
+    // after whatever this answer just changed (e.g. a qualifying FSRS
+    // Correct that just promoted the deck's last ACQUIRED card to LEARNED).
+    this.refreshMasteryUnlock();
 
     return decision;
   }
@@ -334,6 +403,11 @@ export class SchedulerSimulation {
 
     if (reason === "near_due_weighted_selection") {
       this.applyNearDueAnswer(card, correct, newPosition);
+      return;
+    }
+
+    if (reason === "random_mastered_shuffle_bag") {
+      this.applyRandomMasteredAnswer(card, correct, newPosition);
       return;
     }
 
@@ -393,6 +467,30 @@ export class SchedulerSimulation {
     }
 
     const result = resolveLongTermWrong({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
+    const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
+    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard, repairObligation: obligation });
+  }
+
+  /**
+   * Phase 7 brief sections 14-15 (reviewed corrections) -- see this
+   * module's header. Correct: an early/optional FSRS review via
+   * resolveRandomMasteredCorrect (FSRS Good, mastery counters and
+   * cardState otherwise untouched -- never routed through
+   * applyQualifyingFsrsCorrect). Wrong: the full long-term lapse via
+   * resolveRandomMasteredWrong, identical severity to an ordinary Due/
+   * Near-Due Wrong -- never a second, lighter free-play-specific failure
+   * state machine.
+   */
+  private applyRandomMasteredAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {
+    if (correct) {
+      const result = resolveRandomMasteredCorrect({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
+      const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
+      this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard });
+      return;
+    }
+
+    const result = resolveRandomMasteredWrong({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
     const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
     const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard, repairObligation: obligation });
@@ -485,6 +583,15 @@ export function makeOutsideCard(cardId: string, overrides: Partial<SchedulableCa
 /** progress ~0.8 -> NEAR_DUE at FIXTURE_NOW. */
 export function makeNearDueCard(cardId: string): SchedulableCardRow {
   return makeOutsideCard(cardId, {}, { last_review: new Date(FIXTURE_NOW.getTime() - 8 * FIXTURE_DAY_MS) });
+}
+
+/** A strong-Mastered RANDOM_MASTERED candidate by default: LEARNED, has_ever_been_mastered, OUTSIDE, progress ~0 (well under 0.75 -> STRONG_OUTSIDE, not Due/Near-Due). */
+export function makeMasteredCard(cardId: string, overrides: Partial<SchedulableCardRow> = {}): SchedulableCardRow {
+  return makeOutsideCard(
+    cardId,
+    { cardStatus: "LEARNED", hasEverBeenMastered: true, fsrsReviewCorrectCount: 3, fsrsReviewCorrectStreak: 2, ...overrides },
+    { last_review: FIXTURE_NOW },
+  );
 }
 
 export function makeDueCards(count: number, prefix = "due"): SchedulableCardRow[] {

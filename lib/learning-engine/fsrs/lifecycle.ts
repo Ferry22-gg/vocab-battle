@@ -149,3 +149,35 @@ export function resolveNearDueCorrect(input: ResolveFsrsAnswerInput): FsrsAnswer
 
   return { fsrsUpdate, cardState: input.cardState, grade };
 }
+
+/**
+ * Phase 7 (Post-Mastery) brief, reviewed correction: "RANDOM_MASTERED
+ * Correct is NOT a true no-op. Treat it as an early/optional FSRS review...
+ * DO NOT increment fsrs_review_correct_count/streak... Prefer reusing the
+ * existing Near-Due-style 'FSRS updates, lifecycle/mastery counters
+ * unchanged' orchestration pattern if architecturally appropriate. Do not
+ * create a second FSRS implementation."
+ *
+ * resolveNearDueCorrect already IS exactly that pattern -- FSRS Good,
+ * cardState (and therefore fsrsReviewCorrectCount/Streak) returned
+ * byte-for-byte unchanged, never routed through applyQualifyingFsrsCorrect
+ * -- so this is a plain alias, not a second implementation, the same
+ * precedent as resolveNearDueWrong above. A Random Mastered free-play
+ * Correct and a Near-Due Correct are, mechanically, the identical event:
+ * an early/optional successful retrieval that updates the FSRS schedule
+ * without counting as qualifying scheduled mastery evidence (section 16 of
+ * the Phase 7 brief's own comparison table makes this explicit). Prefer
+ * calling resolveRandomMasteredCorrect at a Random Mastered call site for
+ * readability; the two names are otherwise interchangeable.
+ */
+export const resolveRandomMasteredCorrect = resolveNearDueCorrect;
+
+/**
+ * Phase 7 (Post-Mastery) brief section 15: "RANDOM_MASTERED + WRONG...
+ * reuse the full long-term lapse lifecycle... Do NOT create a lighter
+ * free-play Wrong rule." Identical mechanics to resolveLongTermWrong/
+ * resolveNearDueWrong above (FSRS Again, FORGOTTEN, pool_status ACTIVE,
+ * REPAIR_PENDING, streak reset, count preserved) -- a plain alias, not a
+ * third implementation of the same lapse.
+ */
+export const resolveRandomMasteredWrong = resolveLongTermWrong;

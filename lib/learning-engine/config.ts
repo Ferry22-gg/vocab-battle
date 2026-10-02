@@ -148,3 +148,35 @@ export const POST_GOAL_SOURCE_WEIGHTS = {
 
 /** Section 7 (active_starvation_max_active_source_draws): an eligible Active card that survives this many Active-source selections without being chosen must be guaranteed on the next Active slot (section 22.3) -- Phase 6C only exposes the raw candidate structure for this; the guarantee itself is Phase 6D. */
 export const ACTIVE_STARVATION_MAX_DRAWS = 40;
+
+// ---------------------------------------------------------------------------
+// Post-Mastery source policy (section 25.3) -- Phase 7
+// ---------------------------------------------------------------------------
+
+/**
+ * Section 25.3's pre-Daily-Goal Post-Mastery regimes, keyed by the SAME
+ * due-tier boundaries as ordinary mode (lib/learning-engine/scheduler/
+ * source-policy.ts's classifyDueTier, reused unchanged -- due_count === 0
+ * / 1-9 / 10+ is not a concept Post-Mastery redefines). Literal spec
+ * values, not derived.
+ */
+export const POST_MASTERY_PRE_GOAL_SOURCE_WEIGHTS = {
+  ACTIVE_FOCUS: { randomMastered: 0.8, due: 0.0, near: 0.2 },
+  BALANCED: { randomMastered: 0.45, due: 0.4, near: 0.15 },
+  REVIEW_PRESSURE: { randomMastered: 0.3, due: 0.6, near: 0.1 },
+} as const;
+
+/**
+ * Section 25.3's post-Daily-Goal Post-Mastery regimes. The zero-Due row
+ * (`ACTIVE_FOCUS`) was clarified to be IDENTICAL to the pre-goal zero-Due
+ * row: "intentionally unchanged from the pre-goal zero-Due regime -- it is
+ * already sufficiently free-play oriented." (Reviewed correction -- a
+ * prior revision of this file treated this combination as an unresolved
+ * specification gap and threw rather than guessing; it is now an
+ * explicitly confirmed regime, not an invented default.)
+ */
+export const POST_MASTERY_POST_GOAL_SOURCE_WEIGHTS = {
+  ACTIVE_FOCUS: { randomMastered: 0.8, due: 0.0, near: 0.2 },
+  BALANCED: { randomMastered: 0.55, due: 0.25, near: 0.2 },
+  REVIEW_PRESSURE: { randomMastered: 0.3, due: 0.6, near: 0.1 },
+} as const;

@@ -81,6 +81,22 @@ export interface DeckSchedulerState {
    * creation/consumption/preemption semantics this field supports.
    */
   readonly firstPassQueue: readonly string[] | null;
+  /**
+   * Phase 7: the current Random Mastered shuffle bag (section 25.4) --
+   * still-undrawn member cardIds of the current shuffle cycle, in draw
+   * order. Null/empty means no cycle is in flight (either none has ever
+   * been built, or the previous one was fully consumed). Durable backing
+   * already exists: `user_deck_learning_state.post_mastery_shuffle_bag_
+   * state jsonb` (supabase/migrations/
+   * 20261001000000_learning_engine_v1_additive_schema.sql) was reserved
+   * for exactly this by Phase 1 ("deterministic equivalent" to a shuffle
+   * bag, spec section 29.2) -- this field is this snapshot's pure-TS view
+   * of that column; mapping it to/from jsonb is a future DAL's job, not
+   * this type's. See lib/learning-engine/scheduler/
+   * random-mastered-selection.ts for the full draw/reconciliation
+   * semantics this field supports.
+   */
+  readonly postMasteryShuffleBag: readonly string[] | null;
 }
 
 export interface DailyGoalSnapshot {

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { createSeededRandom, makeActiveCard, makeCriticallyDueCard, makeDueCards, makeNearDueCard, SchedulerSimulation } from "../helpers/learning-engine-simulation";
+import {
+  createSeededRandom,
+  makeActiveCard,
+  makeCriticallyDueCard,
+  makeDueCards,
+  makeMasteredCard,
+  makeNearDueCard,
+  SchedulerSimulation,
+} from "../helpers/learning-engine-simulation";
 import { chooseNextCard } from "@/lib/learning-engine/scheduler/next-card";
 import type { DeckSchedulerSnapshot } from "@/lib/learning-engine/scheduler/snapshot";
 
@@ -148,7 +156,7 @@ describe("empty-source renormalization across combinations (Phase 6F brief secti
     for (let i = 0; i < 50; i += 1) {
       const decision = chooseNextCard(snapshot, random);
       expect(decision.source).toBe("ACTIVE");
-      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 1, due: 0, near: 0 });
+      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 1, due: 0, near: 0, randomMastered: 0 });
     }
   });
 
@@ -159,7 +167,7 @@ describe("empty-source renormalization across combinations (Phase 6F brief secti
     for (let i = 0; i < 50; i += 1) {
       const decision = chooseNextCard(snapshot, random);
       expect(decision.source).toBe("FSRS_DUE");
-      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 1, near: 0 });
+      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 1, near: 0, randomMastered: 0 });
     }
   });
 
@@ -170,7 +178,7 @@ describe("empty-source renormalization across combinations (Phase 6F brief secti
     for (let i = 0; i < 50; i += 1) {
       const decision = chooseNextCard(snapshot, random);
       expect(decision.source).toBe("NEAR_DUE");
-      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 0, near: 1 });
+      expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 0, near: 1, randomMastered: 0 });
     }
   });
 
@@ -239,5 +247,87 @@ describe("empty-source renormalization across combinations (Phase 6F brief secti
     expect(decision.source).toBe("ACTIVE");
     expect(decision.selectionReason).toBe("spaced_confirmation");
     expect(decision.trace.sourceWeightsNormalized.active).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
+// Phase 7: Post-Mastery source policy distribution (Phase 7 brief section 31)
+// =============================================================================
+
+function buildPostMasteryDistributionSnapshot(params: { dueCount: number; dailyGoalCompleted: boolean }): DeckSchedulerSnapshot {
+  const sim = new SchedulerSimulation({
+    cards: [
+      ...Array.from({ length: 30 }, (_, i) => makeMasteredCard(`mastered-${i}`)),
+      ...makeDueCards(params.dueCount),
+      ...Array.from({ length: 10 }, (_, i) => makeNearDueCard(`near-${i}`)),
+    ],
+    random: createSeededRandom(1),
+    dailyGoal: { enemiesDefeatedToday: 0, completed: params.dailyGoalCompleted },
+    hasAchievedFullMastery: true,
+  });
+  return sim.snapshot();
+}
+
+function samplePostMasterySourceDistribution(
+  snapshot: DeckSchedulerSnapshot,
+  seed: number,
+  n: number,
+): { randomMastered: number; due: number; near: number } {
+  const random = createSeededRandom(seed);
+  const counts = { randomMastered: 0, due: 0, near: 0 };
+  for (let i = 0; i < n; i += 1) {
+    const decision = chooseNextCard(snapshot, random);
+    if (decision.source === "RANDOM_MASTERED") {
+      counts.randomMastered += 1;
+    } else if (decision.source === "FSRS_DUE") {
+      counts.due += 1;
+    } else if (decision.source === "NEAR_DUE") {
+      counts.near += 1;
+    }
+  }
+  return { randomMastered: counts.randomMastered / n, due: counts.due / n, near: counts.near / n };
+}
+
+function expectPostMasteryCloseToWeights(
+  empirical: { randomMastered: number; due: number; near: number },
+  nominal: { randomMastered: number; due: number; near: number },
+): void {
+  expect(empirical.randomMastered).toBeGreaterThanOrEqual(nominal.randomMastered - TOLERANCE);
+  expect(empirical.randomMastered).toBeLessThanOrEqual(nominal.randomMastered + TOLERANCE);
+  expect(empirical.due).toBeGreaterThanOrEqual(nominal.due - TOLERANCE);
+  expect(empirical.due).toBeLessThanOrEqual(nominal.due + TOLERANCE);
+  expect(empirical.near).toBeGreaterThanOrEqual(nominal.near - TOLERANCE);
+  expect(empirical.near).toBeLessThanOrEqual(nominal.near + TOLERANCE);
+}
+
+describe("Post-Mastery source policy distribution (Phase 7 brief section 31, same N/tolerance as section 10)", () => {
+  it("21. no Due, pre-goal -> 0.80/0.00/0.20", () => {
+    const snapshot = buildPostMasteryDistributionSnapshot({ dueCount: 0, dailyGoalCompleted: false });
+    const empirical = samplePostMasterySourceDistribution(snapshot, 51, SAMPLE_SIZE);
+    expectPostMasteryCloseToWeights(empirical, { randomMastered: 0.8, due: 0.0, near: 0.2 });
+  });
+
+  it("22. 1-9 Due, pre-goal -> 0.45/0.40/0.15", () => {
+    const snapshot = buildPostMasteryDistributionSnapshot({ dueCount: 5, dailyGoalCompleted: false });
+    const empirical = samplePostMasterySourceDistribution(snapshot, 52, SAMPLE_SIZE);
+    expectPostMasteryCloseToWeights(empirical, { randomMastered: 0.45, due: 0.4, near: 0.15 });
+  });
+
+  it("23. 10+ Due, pre-goal -> 0.30/0.60/0.10", () => {
+    const snapshot = buildPostMasteryDistributionSnapshot({ dueCount: 15, dailyGoalCompleted: false });
+    const empirical = samplePostMasterySourceDistribution(snapshot, 53, SAMPLE_SIZE);
+    expectPostMasteryCloseToWeights(empirical, { randomMastered: 0.3, due: 0.6, near: 0.1 });
+  });
+
+  it("24. post-goal, 1-9 Due -> 0.55/0.25/0.20", () => {
+    const snapshot = buildPostMasteryDistributionSnapshot({ dueCount: 5, dailyGoalCompleted: true });
+    const empirical = samplePostMasterySourceDistribution(snapshot, 54, SAMPLE_SIZE);
+    expectPostMasteryCloseToWeights(empirical, { randomMastered: 0.55, due: 0.25, near: 0.2 });
+  });
+
+  it("25. post-goal, 10+ Due -> 0.30/0.60/0.10 (unchanged)", () => {
+    const snapshot = buildPostMasteryDistributionSnapshot({ dueCount: 15, dailyGoalCompleted: true });
+    const empirical = samplePostMasterySourceDistribution(snapshot, 55, SAMPLE_SIZE);
+    expectPostMasteryCloseToWeights(empirical, { randomMastered: 0.3, due: 0.6, near: 0.1 });
   });
 });

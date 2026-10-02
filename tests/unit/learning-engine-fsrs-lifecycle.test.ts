@@ -7,6 +7,8 @@ import {
   resolveNearDueCorrect,
   resolveNearDueWrong,
   resolveQualifyingFsrsCorrect,
+  resolveRandomMasteredCorrect,
+  resolveRandomMasteredWrong,
   type ResolveFsrsAnswerInput,
 } from "@/lib/learning-engine/fsrs/lifecycle";
 import { progressToFsrsCard, type UserCardProgressFsrsUpdate } from "@/lib/learning-engine/fsrs/adapter";
@@ -320,5 +322,110 @@ describe("22. deterministic/pure helpers produce reproducible results", () => {
 
     expect(card).toEqual(cardBefore);
     expect(cardState).toEqual(cardStateBefore);
+  });
+});
+
+/**
+ * Phase 7 (Post-Mastery) brief, reviewed correction (sections 14-15):
+ * "RANDOM_MASTERED Correct is NOT a true no-op... treat it as an
+ * early/optional FSRS review" and "RANDOM_MASTERED Wrong: reuse the full
+ * long-term lapse lifecycle." resolveRandomMasteredCorrect/Wrong are plain
+ * aliases for resolveNearDueCorrect/resolveLongTermWrong respectively (no
+ * second FSRS implementation) -- these tests prove the aliased behavior
+ * end-to-end from the Random Mastered call site's own perspective.
+ */
+describe("resolveRandomMasteredCorrect (Phase 7 brief section 14)", () => {
+  it("is literally the same function reference as resolveNearDueCorrect -- no second FSRS implementation", () => {
+    expect(resolveRandomMasteredCorrect).toBe(resolveNearDueCorrect);
+  });
+
+  it("7. maps Correct to FSRS Good", () => {
+    const result = resolveRandomMasteredCorrect({ card: freshCard, cardState: learnedCard(), now: NOW, desiredRetention: 0.9 });
+    expect(result.grade).toBe(Rating.Good);
+  });
+
+  it("8-9, 14. the FSRS state changes using the actual elapsed-time event -- not a no-op, and the schedule differs when the review happens later", () => {
+    const soon = resolveRandomMasteredCorrect({ card: freshCard, cardState: learnedCard(), now: NOW, desiredRetention: 0.9 });
+    const later = resolveRandomMasteredCorrect({ card: freshCard, cardState: learnedCard(), now: LATER, desiredRetention: 0.9 });
+
+    // Not a no-op: the update actually advances stability/due relative to the untouched input card.
+    expect(soon.fsrsUpdate.fsrs_stability).not.toBe(freshCard.stability);
+    expect(soon.fsrsUpdate.fsrs_due_at.getTime()).not.toBe(freshCard.due.getTime());
+
+    // Uses the ACTUAL elapsed time of the event: reviewing later produces a
+    // different schedule than reviewing sooner, given the same input card.
+    expect(later.fsrsUpdate.fsrs_due_at.getTime()).not.toBe(soon.fsrsUpdate.fsrs_due_at.getTime());
+    expect(nextFsrsCard(soon.fsrsUpdate, NOW).last_review?.getTime()).toBe(NOW.getTime());
+    expect(nextFsrsCard(later.fsrsUpdate, LATER).last_review?.getTime()).toBe(LATER.getTime());
+  });
+
+  it("10-13, 15. mastery counters and cardStatus are untouched -- never routed through applyQualifyingFsrsCorrect, even at the Mastery threshold", () => {
+    const cardState = learnedCard({ fsrsReviewCorrectCount: 3, fsrsReviewCorrectStreak: 2 }); // already at/past the Mastery threshold
+    const result = resolveRandomMasteredCorrect({ card: freshCard, cardState, now: NOW, desiredRetention: 0.9 });
+
+    expect(result.cardState.fsrsReviewCorrectCount).toBe(3); // 10. unchanged
+    expect(result.cardState.fsrsReviewCorrectStreak).toBe(2); // 11. unchanged
+    expect(result.cardState.cardStatus).toBe("LEARNED"); // 12. remains LEARNED (was already)
+    expect(result.cardState.hasEverBeenMastered).toBe(true); // 13. remains true
+    expect(result.cardState).toEqual(cardState); // 15. byte-for-byte identical cardState -- proves no mastery transition ran
+  });
+
+  it("throws if called on a card not ACQUIRED/LEARNED+OUTSIDE (a Random Mastered candidate is always LEARNED+OUTSIDE by construction)", () => {
+    expect(() => resolveRandomMasteredCorrect({ card: freshCard, cardState: INITIAL_CARD_STATE, now: NOW, desiredRetention: 0.9 })).toThrow(
+      /requires cardStatus ACQUIRED or LEARNED/,
+    );
+  });
+});
+
+describe("resolveRandomMasteredWrong (Phase 7 brief section 15)", () => {
+  it("is literally the same function reference as resolveLongTermWrong -- no lighter free-play-specific failure state machine", () => {
+    expect(resolveRandomMasteredWrong).toBe(resolveLongTermWrong);
+  });
+
+  it("16. maps Wrong to FSRS Again", () => {
+    const result = resolveRandomMasteredWrong({ card: freshCard, cardState: learnedCard(), now: NOW, desiredRetention: 0.9 });
+    expect(result.grade).toBe(Rating.Again);
+  });
+
+  it("17. enters FORGOTTEN / ACTIVE / REPAIR_PENDING, the full long-term lapse", () => {
+    const result = resolveRandomMasteredWrong({ card: freshCard, cardState: learnedCard(), now: NOW, desiredRetention: 0.9 });
+    expect(result.cardState.cardStatus).toBe("FORGOTTEN");
+    expect(result.cardState.poolStatus).toBe("ACTIVE");
+    expect(result.cardState.relearningPhase).toBe("REPAIR_PENDING");
+  });
+
+  it("18-20. cumulative mastery count preserved, streak reset, has_ever_been_mastered remains true", () => {
+    const result = resolveRandomMasteredWrong({
+      card: freshCard,
+      cardState: learnedCard({ fsrsReviewCorrectCount: 6, fsrsReviewCorrectStreak: 4 }),
+      now: NOW,
+      desiredRetention: 0.9,
+    });
+    expect(result.cardState.fsrsReviewCorrectCount).toBe(6); // 18. preserved
+    expect(result.cardState.fsrsReviewCorrectStreak).toBe(0); // 19. reset
+    expect(result.cardState.hasEverBeenMastered).toBe(true); // 20. never cleared
+  });
+
+  it("21-23. the full short-restoration composition: repair obligation created, Repair Correct alone does not restore, later Spaced Correct restores Mastery", () => {
+    const wrongResult = resolveRandomMasteredWrong({ card: freshCard, cardState: learnedCard(), now: NOW, desiredRetention: 0.9 });
+    expect(wrongResult.cardState.relearningPhase).toBe("REPAIR_PENDING");
+
+    // 21. a repair obligation is created exactly as for any other long-term Wrong.
+    const wrongPosition = 50;
+    const obligation = createRepairObligation({ cardId: "card-x", wrongPosition, random: () => 0.1 });
+    expect(obligation.targetPosition).toBeGreaterThanOrEqual(wrongPosition + 4);
+    expect(obligation.hardCapPosition).toBe(wrongPosition + 7);
+
+    // 22. Repair Correct alone does not restore Mastery.
+    const afterRepair = applyRelearningRepairCorrect(wrongResult.cardState);
+    expect(afterRepair.cardStatus).toBe("FORGOTTEN"); // not restored yet
+    expect(afterRepair.relearningPhase).toBe("SPACED_CONFIRMATION_PENDING");
+
+    // 23. a later Spaced Correct restores Mastery (short restoration, since has_ever_been_mastered is true).
+    const restored = applySpacedCorrect(afterRepair);
+    expect(restored.cardStatus).toBe("LEARNED");
+    expect(restored.poolStatus).toBe("OUTSIDE");
+    expect(restored.relearningPhase).toBeNull();
+    expect(restored.hasEverBeenMastered).toBe(true);
   });
 });

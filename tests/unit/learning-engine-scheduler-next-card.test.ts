@@ -151,6 +151,9 @@ function snapshot(params: {
   policyVersion?: string;
   now?: Date;
   firstPassQueue?: readonly string[] | null;
+  hasAchievedFullMastery?: boolean;
+  masteredCount?: number;
+  postMasteryShuffleBag?: readonly string[] | null;
 }): DeckSchedulerSnapshot {
   return {
     userId: "user-1",
@@ -159,12 +162,13 @@ function snapshot(params: {
     deckState: {
       desiredRetention: params.desiredRetention ?? 0.9,
       policyVersion: params.policyVersion ?? "learning-engine-v1.0",
-      hasAchievedFullMastery: false,
-      masteredCount: 0,
+      hasAchievedFullMastery: params.hasAchievedFullMastery ?? false,
+      masteredCount: params.masteredCount ?? 0,
       schedulerPosition: params.schedulerPosition ?? 0,
       lastCriticalDuePosition: params.lastCriticalDuePosition ?? null,
       schedulerRevision: params.schedulerRevision ?? 1,
       firstPassQueue: params.firstPassQueue ?? null,
+      postMasteryShuffleBag: params.postMasteryShuffleBag ?? null,
     },
     dailyGoal: { enemiesDefeatedToday: 0, completed: params.dailyGoalCompleted ?? false },
     cards: params.cards,
@@ -278,42 +282,42 @@ describe("source policy nominal weights (section 10 of the brief, reusing Phase 
   it("9. Due 0, pre-goal -> Active Focus (0.90/0.00/0.10)", () => {
     const s = snapshot({ cards: [anchor] });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.9, due: 0.0, near: 0.1 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.9, due: 0.0, near: 0.1, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("pre_goal_active_focus");
   });
 
   it("10. Due 1-9, pre-goal -> Balanced (0.70/0.25/0.05)", () => {
     const s = snapshot({ cards: [anchor, ...dueCards(3)] });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.7, due: 0.25, near: 0.05 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.7, due: 0.25, near: 0.05, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("pre_goal_balanced");
   });
 
   it("11. Due 10+, pre-goal -> Review Pressure (0.50/0.48/0.02)", () => {
     const s = snapshot({ cards: [anchor, ...dueCards(12)] });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("pre_goal_review_pressure");
   });
 
   it("12. Due 0, post-goal -> Active Focus (0.80/0.00/0.20)", () => {
     const s = snapshot({ cards: [anchor], dailyGoalCompleted: true });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.8, due: 0.0, near: 0.2 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.8, due: 0.0, near: 0.2, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("post_goal_active_focus");
   });
 
   it("13. Due 1-9, post-goal -> Balanced (0.75/0.15/0.10)", () => {
     const s = snapshot({ cards: [anchor, ...dueCards(3)], dailyGoalCompleted: true });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.75, due: 0.15, near: 0.1 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.75, due: 0.15, near: 0.1, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("post_goal_balanced");
   });
 
   it("14. Due 10+, post-goal -> Review Pressure, unchanged (0.50/0.48/0.02)", () => {
     const s = snapshot({ cards: [anchor, ...dueCards(12)], dailyGoalCompleted: true });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02, randomMastered: 0 });
     expect(decision.trace.schedulerMode).toBe("post_goal_review_pressure");
   });
 });
@@ -326,7 +330,7 @@ describe("empty-source renormalization (section 11 of the brief, reusing Phase 6
   it("15. empty NEAR is removed and ACTIVE renormalizes to 1.00 (Due 0 tier, no Near-Due candidates)", () => {
     const s = snapshot({ cards: [activeCard()] });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 1, due: 0, near: 0 });
+    expect(decision.trace.sourceWeightsNormalized).toEqual({ active: 1, due: 0, near: 0, randomMastered: 0 });
     expect(decision.source).toBe("ACTIVE");
   });
 
@@ -423,7 +427,7 @@ describe("large Due backlog never suppresses ACTIVE (sections 23/24 of the brief
   it("23. Due >= 10 preserves the exact nominal 0.50/0.48/0.02 split before renormalization", () => {
     const s = snapshot({ cards: [activeCard(), ...dueCards(15)] });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02 });
+    expect(decision.trace.sourceWeightsRaw).toEqual({ active: 0.5, due: 0.48, near: 0.02, randomMastered: 0 });
   });
 
   it("24. no legacy 'review all Due first' behavior -- ACTIVE keeps a substantial, nonzero share even under a large Due backlog", () => {
@@ -521,7 +525,7 @@ describe("SelectionTrace completeness and correctness (section 18 of the brief)"
     expect(sum).toBeCloseTo(1);
 
     const allUnavailable = chooseNextCard(snapshot({ cards: [] }), scriptedRandom([0.5]));
-    expect(allUnavailable.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 0, near: 0 });
+    expect(allUnavailable.trace.sourceWeightsNormalized).toEqual({ active: 0, due: 0, near: 0, randomMastered: 0 });
   });
 
   it("33. trace.candidateCounts.active reflects the virtually refilled projection, not the pre-refill snapshot", () => {

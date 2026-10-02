@@ -106,8 +106,16 @@ import { selectOrdinaryActiveCandidates } from "@/lib/learning-engine/scheduler/
 import { chooseDueCard, selectDueCandidates } from "@/lib/learning-engine/scheduler/due-selection";
 import { findGlobalInterrupt } from "@/lib/learning-engine/scheduler/interrupts";
 import { chooseNearDueCard, selectNearDueCandidates } from "@/lib/learning-engine/scheduler/near-due-selection";
+import { shouldUsePostMasteryMode } from "@/lib/learning-engine/scheduler/post-mastery-mode";
+import {
+  computePostMasterySourceWeights,
+  renormalizePostMasterySourceWeights,
+  type PostMasterySchedulerMode,
+  type PostMasterySourceAvailability,
+} from "@/lib/learning-engine/scheduler/post-mastery-source-policy";
+import { chooseRandomMasteredCard, selectStrongMasteredCandidateIds } from "@/lib/learning-engine/scheduler/random-mastered-selection";
 import { renormalizeSourceWeights, type SourceAvailability } from "@/lib/learning-engine/scheduler/renormalize";
-import { computeSourceWeights, type SchedulerMode, type SourceWeights } from "@/lib/learning-engine/scheduler/source-policy";
+import { computeSourceWeights, type SchedulerMode } from "@/lib/learning-engine/scheduler/source-policy";
 import { selectSpacedConfirmationCandidates } from "@/lib/learning-engine/scheduler/spaced-confirmation-selection";
 import { weightedRandomChoice, type RandomSource } from "@/lib/learning-engine/scheduler/weighted-random";
 import type { DeckSchedulerSnapshot, SchedulableCardRow } from "@/lib/learning-engine/scheduler/snapshot";
@@ -124,10 +132,10 @@ function invariant(condition: boolean, message: string): asserts condition {
 // Section 16-17 of the Phase 6E brief: the public result shape
 // =============================================================================
 
-/** The ordinary v1 source set (section 8 of the brief) plus `null` for the two no-card-selected outcomes (an all-sources-unavailable emergency failure). RANDOM_MASTERED does not exist yet -- Phase 7. */
-export type NextCardSource = "ACTIVE" | "FSRS_DUE" | "NEAR_DUE" | null;
+/** The ordinary v1 source set (section 8 of the Phase 6E brief) plus Phase 7's RANDOM_MASTERED, plus `null` for the two no-card-selected outcomes (an all-sources-unavailable failure). ACTIVE and RANDOM_MASTERED never co-occur as the chosen top-level SOURCE within the same decision (Phase 7 brief section 9: "do NOT introduce a four-source hybrid") -- but a Post-Mastery decision's relearning-servicing tier can still report `source: "ACTIVE"` for a repair_target/spaced_confirmation presentation, exactly as ordinary mode already does; see this module's Post-Mastery section header. */
+export type NextCardSource = "ACTIVE" | "FSRS_DUE" | "NEAR_DUE" | "RANDOM_MASTERED" | null;
 
-/** Section 17: every reason this pipeline can produce. Not persisted by this module (section 22) -- a future Phase 8 telemetry write is the only consumer of the string value itself. */
+/** Section 17 of the Phase 6E brief, extended by Phase 7's "random_mastered_shuffle_bag". Not persisted by this module (section 22) -- a future Phase 8 telemetry write is the only consumer of the string value itself. */
 export type SelectionReason =
   | "repair_hard_cap"
   | "critical_due_interrupt"
@@ -138,14 +146,27 @@ export type SelectionReason =
   | "active_weighted_selection"
   | "due_weighted_selection"
   | "near_due_weighted_selection"
+  | "random_mastered_shuffle_bag"
   | "emergency_cooldown_relaxation"
   | "no_card_all_unavailable";
 
-/** Section 9 of the brief: ACTIVE's count already folds in starvation/repair-target/spaced-confirmation candidates, not just the ordinary weighted subset -- see computeActiveCandidateCount below. */
+/** Either an ordinary-mode scheduler regime or one of Phase 7's Post-Mastery regimes -- exactly one of the two families applies on any given decision, per whichever mode shouldUsePostMasteryMode selected. */
+export type AnySchedulerMode = SchedulerMode | PostMasterySchedulerMode;
+
+/** Section 9 of the Phase 6E brief: ACTIVE's count already folds in starvation/repair-target/spaced-confirmation candidates, not just the ordinary weighted subset -- see computeActiveCandidateCount below. `randomMastered` is Phase 7's equivalent for the RANDOM_MASTERED source (lib/learning-engine/scheduler/random-mastered-selection.ts's selectStrongMasteredCandidateIds) -- always computed and present, 0 whenever irrelevant to the current mode, mirroring how `due`/`near` are already computed unconditionally regardless of mode. */
 export interface SourceCandidateCounts {
   readonly active: number;
   readonly due: number;
   readonly near: number;
+  readonly randomMastered: number;
+}
+
+/** The union of both modes' source-weight shapes, so the trace has one stable field shape regardless of which mode produced a decision -- the dimension irrelevant to the current mode (active in Post-Mastery, randomMastered in ordinary mode) is always exactly 0, never omitted. */
+export interface FullSourceWeights {
+  readonly active: number;
+  readonly due: number;
+  readonly near: number;
+  readonly randomMastered: number;
 }
 
 /**
@@ -159,15 +180,15 @@ export interface SelectionTrace {
   readonly cardId: string | null;
   readonly source: NextCardSource;
   readonly selectionReason: SelectionReason;
-  readonly schedulerMode: SchedulerMode;
+  readonly schedulerMode: AnySchedulerMode;
   readonly schedulerPosition: number;
   readonly schedulerRevision: number;
   readonly dueCount: number;
   readonly dailyGoalCompleteBefore: boolean;
-  readonly sourceWeightsRaw: SourceWeights;
-  readonly sourceWeightsNormalized: SourceWeights;
+  readonly sourceWeightsRaw: FullSourceWeights;
+  readonly sourceWeightsNormalized: FullSourceWeights;
   readonly candidateCounts: SourceCandidateCounts;
-  /** The weight the winning card was drawn with, where selection was weighted-random (active_weighted_selection, due_weighted_selection, near_due_weighted_selection, critical_due_interrupt). `null` for every deterministic-priority reason (repair_hard_cap, active_starvation, repair_target, spaced_confirmation, emergency_cooldown_relaxation, no_card_all_unavailable). */
+  /** The weight the winning card was drawn with, where selection was weighted-random (active_weighted_selection, due_weighted_selection, near_due_weighted_selection, critical_due_interrupt). `null` for every deterministic-priority reason (repair_hard_cap, active_starvation, repair_target, spaced_confirmation, random_mastered_shuffle_bag, emergency_cooldown_relaxation, no_card_all_unavailable) -- a shuffle-bag draw is a deterministic consume-without-replacement, never a weighted pick among candidates, so it carries no priority weight either. */
   readonly cardPriorityWeight: number | null;
   /** Populated only for due_weighted_selection and critical_due_interrupt (section 18's "retrievability for Due/Critical selections"). */
   readonly retrievability: number | null;
@@ -179,8 +200,12 @@ export interface SelectionTrace {
   readonly emergencyFallbackApplied: boolean;
   /** The first-pass queue state this decision READ (DeckSchedulerState.firstPassQueue, normalized: an empty array is reported as null). Null means no batch was in flight when this decision started. */
   readonly firstPassQueueBefore: readonly string[] | null;
-  /** The first-pass queue state a future trusted commit should persist as the new DeckSchedulerState.firstPassQueue. Unchanged from `firstPassQueueBefore` on every path except a first-pass serve (which removes the served head, or creates a brand new batch and immediately removes its own served head) -- in particular, a global interrupt NEVER changes this (section PREEMPTION: "these interrupts do not destroy or reorder the remaining first-pass queue"). */
+  /** The first-pass queue state a future trusted commit should persist as the new DeckSchedulerState.firstPassQueue. Unchanged from `firstPassQueueBefore` on every path except a first-pass serve (which removes the served head, or creates a brand new batch and immediately removes its own served head) -- in particular, a global interrupt NEVER changes this (section PREEMPTION: "these interrupts do not destroy or reorder the remaining first-pass queue"). Always passed through unchanged during Post-Mastery mode (first-pass batches cannot exist then -- Post-Mastery's own entry condition guarantees no NEW/LEARNING cards). */
   readonly firstPassQueueAfter: readonly string[] | null;
+  /** Phase 7: the Random Mastered shuffle bag state this decision READ (DeckSchedulerState.postMasteryShuffleBag, normalized). Null means no shuffle cycle was in flight. Always passed through unchanged during ordinary mode (RANDOM_MASTERED is never drawn then). */
+  readonly postMasteryShuffleBagBefore: readonly string[] | null;
+  /** Phase 7: the shuffle bag state a future trusted commit should persist. Unchanged from `postMasteryShuffleBagBefore` on every path except a random_mastered_shuffle_bag draw -- including a global interrupt or the Post-Mastery relearning-servicing tier, neither of which ever touches it. */
+  readonly postMasteryShuffleBagAfter: readonly string[] | null;
   /** Section 20: every value the injected RandomSource produced during this decision, in consumption order -- sufficient for Phase 6F to replay/debug a decision given the same snapshot and the same RNG seed. */
   readonly randomDraws: readonly number[];
 }
@@ -194,6 +219,8 @@ export interface NextCardDecision {
   readonly admittedCardIds: readonly string[];
   /** The first-pass queue state a future trusted commit should persist as the new DeckSchedulerState.firstPassQueue -- see SelectionTrace.firstPassQueueAfter for the full semantics (duplicated here, like admittedCardIds, because it is actionable output for that future commit, not merely diagnostic). */
   readonly firstPassQueueAfter: readonly string[] | null;
+  /** Phase 7: the Random Mastered shuffle bag state a future trusted commit should persist -- see SelectionTrace.postMasteryShuffleBagAfter. */
+  readonly postMasteryShuffleBagAfter: readonly string[] | null;
   readonly schedulerPosition: number;
   readonly schedulerRevision: number;
   readonly trace: SelectionTrace;
@@ -327,6 +354,11 @@ function normalizeFirstPassQueue(queue: readonly string[] | null): readonly stri
   return queue !== null && queue.length > 0 ? queue : null;
 }
 
+/** Identical normalization for Phase 7's Random Mastered shuffle bag -- kept as its own one-line function (not a shared generic) so each call site reads as exactly what it normalizes, matching this file's existing style. */
+function normalizePostMasteryShuffleBag(bag: readonly string[] | null): readonly string[] | null {
+  return bag !== null && bag.length > 0 ? bag : null;
+}
+
 /**
  * Candidates for a BRAND NEW first-pass batch: every card that is
  * poolStatus ACTIVE and literally cardStatus "NEW" -- never presented at
@@ -445,20 +477,51 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
   // Pure, RNG-free descriptive bookkeeping, computed once and reused by
   // every return path (including an interrupt short-circuit) -- see this
   // module's header for why this is safe ahead of the interrupt gate.
+  // Phase 7: randomMasteredEligibleCount is likewise always computed,
+  // mirroring due/near, regardless of which mode this decision resolves to.
   const dueCandidateCount = selectDueCandidates(projectedCards, now).length;
   const nearDueCandidateCount = selectNearDueCandidates(projectedCards, now).length;
   const activeCandidateCount = computeActiveCandidateCount(projectedCards, schedulerPosition);
+  const randomMasteredEligibleCount = selectStrongMasteredCandidateIds(projectedCards, now).length;
 
-  const availability: SourceAvailability = {
-    active: activeCandidateCount > 0,
-    due: dueCandidateCount > 0,
-    near: nearDueCandidateCount > 0,
-  };
+  // Phase 7 section 4: ORDINARY vs POST_MASTERY, decided once per decision
+  // and trusted for the rest of this call -- see post-mastery-mode.ts for
+  // why this never re-derives hasAchievedFullMastery itself.
+  const isPostMastery = shouldUsePostMasteryMode({
+    hasAchievedFullMastery: snapshot.deckState.hasAchievedFullMastery,
+    cards: projectedCards,
+  });
 
-  const { mode, weights: sourceWeightsRaw } = computeSourceWeights(dueCandidateCount, snapshot.dailyGoal.completed);
-  const sourceWeightsNormalized = renormalizeSourceWeights(sourceWeightsRaw, availability);
+  let mode: AnySchedulerMode;
+  let sourceWeightsRaw: FullSourceWeights;
+  let sourceWeightsNormalized: FullSourceWeights;
+
+  if (!isPostMastery) {
+    const ordinary = computeSourceWeights(dueCandidateCount, snapshot.dailyGoal.completed);
+    const availability: SourceAvailability = {
+      active: activeCandidateCount > 0,
+      due: dueCandidateCount > 0,
+      near: nearDueCandidateCount > 0,
+    };
+    const normalized = renormalizeSourceWeights(ordinary.weights, availability);
+    mode = ordinary.mode;
+    sourceWeightsRaw = { active: ordinary.weights.active, due: ordinary.weights.due, near: ordinary.weights.near, randomMastered: 0 };
+    sourceWeightsNormalized = { active: normalized.active, due: normalized.due, near: normalized.near, randomMastered: 0 };
+  } else {
+    const postMastery = computePostMasterySourceWeights(dueCandidateCount, snapshot.dailyGoal.completed);
+    const pmAvailability: PostMasterySourceAvailability = {
+      randomMastered: randomMasteredEligibleCount > 0,
+      due: dueCandidateCount > 0,
+      near: nearDueCandidateCount > 0,
+    };
+    const normalized = renormalizePostMasterySourceWeights(postMastery.weights, pmAvailability);
+    mode = postMastery.mode;
+    sourceWeightsRaw = { active: 0, due: postMastery.weights.due, near: postMastery.weights.near, randomMastered: postMastery.weights.randomMastered };
+    sourceWeightsNormalized = { active: 0, due: normalized.due, near: normalized.near, randomMastered: normalized.randomMastered };
+  }
 
   const firstPassQueueBefore = normalizeFirstPassQueue(snapshot.deckState.firstPassQueue);
+  const postMasteryShuffleBagBefore = normalizePostMasteryShuffleBag(snapshot.deckState.postMasteryShuffleBag);
 
   function finalize(result: {
     cardId: string | null;
@@ -469,6 +532,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
     intervalProgress: number | null;
     emergencyFallbackApplied: boolean;
     firstPassQueueAfter: readonly string[] | null;
+    postMasteryShuffleBagAfter: readonly string[] | null;
   }): NextCardDecision {
     const trace: SelectionTrace = {
       cardId: result.cardId,
@@ -481,7 +545,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       dailyGoalCompleteBefore: snapshot.dailyGoal.completed,
       sourceWeightsRaw,
       sourceWeightsNormalized,
-      candidateCounts: { active: activeCandidateCount, due: dueCandidateCount, near: nearDueCandidateCount },
+      candidateCounts: { active: activeCandidateCount, due: dueCandidateCount, near: nearDueCandidateCount, randomMastered: randomMasteredEligibleCount },
       cardPriorityWeight: result.cardPriorityWeight,
       retrievability: result.retrievability,
       intervalProgress: result.intervalProgress,
@@ -490,6 +554,8 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       emergencyFallbackApplied: result.emergencyFallbackApplied,
       firstPassQueueBefore,
       firstPassQueueAfter: result.firstPassQueueAfter,
+      postMasteryShuffleBagBefore,
+      postMasteryShuffleBagAfter: result.postMasteryShuffleBagAfter,
       randomDraws: [...draws],
     };
 
@@ -499,15 +565,17 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       selectionReason: result.selectionReason,
       admittedCardIds,
       firstPassQueueAfter: result.firstPassQueueAfter,
+      postMasteryShuffleBagAfter: result.postMasteryShuffleBagAfter,
       schedulerPosition,
       schedulerRevision,
       trace,
     };
   }
 
-  // Steps 4-5 (section 6 of the brief): the GLOBAL interrupt gate. Fires
-  // (and short-circuits -- no ordinary-source RNG is ever consumed) before
-  // any source weighting/sampling.
+  // Steps 4-5 (section 6 of the Phase 6E brief): the GLOBAL interrupt gate,
+  // mode-independent -- Phase 7 section 11: "Post-Mastery does NOT replace
+  // Phase 6 safety." Fires (and short-circuits -- no ordinary-source RNG is
+  // ever consumed) before any mode-specific source weighting/sampling.
   const globalInterrupt = findGlobalInterrupt({
     cards: projectedCards,
     schedulerPosition,
@@ -518,8 +586,9 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
   });
 
   if (globalInterrupt !== null) {
-    // PREEMPTION: a global interrupt never touches the first-pass queue --
-    // it is reported back completely unchanged, whether null or non-null.
+    // PREEMPTION: a global interrupt never touches the first-pass queue or
+    // the Post-Mastery shuffle bag -- both are reported back completely
+    // unchanged, whether null or non-null.
     const isCritical = globalInterrupt.reason === "critical_due_interrupt";
     return finalize({
       cardId: globalInterrupt.cardId,
@@ -530,14 +599,85 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       intervalProgress: null,
       emergencyFallbackApplied: false,
       firstPassQueueAfter: firstPassQueueBefore,
+      postMasteryShuffleBagAfter: postMasteryShuffleBagBefore,
     });
   }
 
-  // First-pass queue tier: strictly below the two global interrupts, strictly
-  // above ordinary source selection. See this module's header for why no
-  // other ordinary mechanism can ever run while a batch has unserved members.
-  if (firstPassQueueBefore !== null) {
-    const [servedCardId, ...remaining] = firstPassQueueBefore;
+  if (!isPostMastery) {
+    return chooseOrdinaryModeCard({
+      projectedCards,
+      schedulerPosition,
+      now,
+      desiredRetention,
+      sourceWeightsNormalized,
+      activeCandidateCount,
+      dueCandidateCount,
+      nearDueCandidateCount,
+      firstPassQueueBefore,
+      postMasteryShuffleBagBefore,
+      recorded,
+      finalize,
+    });
+  }
+
+  return choosePostMasteryModeCard({
+    projectedCards,
+    schedulerPosition,
+    now,
+    desiredRetention,
+    sourceWeightsNormalized,
+    randomMasteredEligibleCount,
+    dueCandidateCount,
+    nearDueCandidateCount,
+    firstPassQueueBefore,
+    postMasteryShuffleBagBefore,
+    recorded,
+    finalize,
+  });
+}
+
+// =============================================================================
+// Ordinary mode: EXACTLY the pre-Phase-7 Phase 6D/6E pipeline, extracted
+// unchanged into its own function so chooseNextCard can dispatch to it or
+// to choosePostMasteryModeCard below without duplicating either.
+// =============================================================================
+
+type FinalizeFn = (result: {
+  cardId: string | null;
+  source: NextCardSource;
+  selectionReason: SelectionReason;
+  cardPriorityWeight: number | null;
+  retrievability: number | null;
+  intervalProgress: number | null;
+  emergencyFallbackApplied: boolean;
+  firstPassQueueAfter: readonly string[] | null;
+  postMasteryShuffleBagAfter: readonly string[] | null;
+}) => NextCardDecision;
+
+interface OrdinaryModeInput {
+  readonly projectedCards: readonly SchedulableCardRow[];
+  readonly schedulerPosition: number;
+  readonly now: Date;
+  readonly desiredRetention: number;
+  readonly sourceWeightsNormalized: FullSourceWeights;
+  readonly activeCandidateCount: number;
+  readonly dueCandidateCount: number;
+  readonly nearDueCandidateCount: number;
+  readonly firstPassQueueBefore: readonly string[] | null;
+  readonly postMasteryShuffleBagBefore: readonly string[] | null;
+  readonly recorded: RandomSource;
+  readonly finalize: FinalizeFn;
+}
+
+function chooseOrdinaryModeCard(input: OrdinaryModeInput): NextCardDecision {
+  const { projectedCards, schedulerPosition, now, desiredRetention, sourceWeightsNormalized, recorded, finalize } = input;
+  const postMasteryShuffleBagAfter = input.postMasteryShuffleBagBefore; // never touched in ordinary mode
+
+  // First-pass queue tier: strictly above ordinary source selection. See
+  // this module's header for why no other ordinary mechanism can ever run
+  // while a batch has unserved members.
+  if (input.firstPassQueueBefore !== null) {
+    const [servedCardId, ...remaining] = input.firstPassQueueBefore;
     return finalize({
       cardId: servedCardId,
       source: "ACTIVE",
@@ -547,6 +687,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       intervalProgress: null,
       emergencyFallbackApplied: false,
       firstPassQueueAfter: remaining.length > 0 ? remaining : null,
+      postMasteryShuffleBagAfter,
     });
   }
 
@@ -563,23 +704,24 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       intervalProgress: null,
       emergencyFallbackApplied: false,
       firstPassQueueAfter: remaining.length > 0 ? remaining : null,
+      postMasteryShuffleBagAfter,
     });
   }
 
-  // Steps 6-10: ordinary source selection.
+  // Ordinary source selection.
   const sourceEntries: { source: "ACTIVE" | "FSRS_DUE" | "NEAR_DUE"; weight: number }[] = [];
-  if (availability.active) {
+  if (input.activeCandidateCount > 0) {
     sourceEntries.push({ source: "ACTIVE", weight: sourceWeightsNormalized.active });
   }
-  if (availability.due) {
+  if (input.dueCandidateCount > 0) {
     sourceEntries.push({ source: "FSRS_DUE", weight: sourceWeightsNormalized.due });
   }
-  if (availability.near) {
+  if (input.nearDueCandidateCount > 0) {
     sourceEntries.push({ source: "NEAR_DUE", weight: sourceWeightsNormalized.near });
   }
 
-  // Step 12 (section 14 of the brief): all three ordinary sources are
-  // empty -- the emergency fallback, never the ordinary weighted draw.
+  // All three ordinary sources are empty -- the emergency fallback, never
+  // the ordinary weighted draw.
   if (sourceEntries.length === 0) {
     const relaxed = selectEmergencyCooldownRelaxationCandidate(projectedCards, schedulerPosition, recorded);
     if (relaxed === null) {
@@ -591,7 +733,8 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
         retrievability: null,
         intervalProgress: null,
         emergencyFallbackApplied: true,
-        firstPassQueueAfter: firstPassQueueBefore,
+        firstPassQueueAfter: input.firstPassQueueBefore,
+        postMasteryShuffleBagAfter,
       });
     }
     return finalize({
@@ -602,7 +745,8 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       retrievability: null,
       intervalProgress: null,
       emergencyFallbackApplied: true,
-      firstPassQueueAfter: firstPassQueueBefore,
+      firstPassQueueAfter: input.firstPassQueueBefore,
+      postMasteryShuffleBagAfter,
     });
   }
 
@@ -611,7 +755,6 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
     recorded,
   );
 
-  // Steps 11-13: select within the chosen source.
   if (chosenSource === "ACTIVE") {
     const selection = selectActiveInternalCard(projectedCards, schedulerPosition, recorded);
     invariant(selection !== null, "ACTIVE was chosen as the source but selectActiveInternalCard returned null despite a positive candidate count");
@@ -624,7 +767,8 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       retrievability: null,
       intervalProgress: null,
       emergencyFallbackApplied: false,
-      firstPassQueueAfter: firstPassQueueBefore,
+      firstPassQueueAfter: input.firstPassQueueBefore,
+      postMasteryShuffleBagAfter,
     });
   }
 
@@ -640,7 +784,8 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       retrievability: selection.retrievability,
       intervalProgress: null,
       emergencyFallbackApplied: false,
-      firstPassQueueAfter: firstPassQueueBefore,
+      firstPassQueueAfter: input.firstPassQueueBefore,
+      postMasteryShuffleBagAfter,
     });
   }
 
@@ -655,6 +800,172 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
     retrievability: null,
     intervalProgress: selection.intervalProgress,
     emergencyFallbackApplied: false,
-    firstPassQueueAfter: firstPassQueueBefore,
+    firstPassQueueAfter: input.firstPassQueueBefore,
+    postMasteryShuffleBagAfter,
+  });
+}
+
+// =============================================================================
+// Phase 7: Post-Mastery mode
+// =============================================================================
+
+interface PostMasteryModeInput {
+  readonly projectedCards: readonly SchedulableCardRow[];
+  readonly schedulerPosition: number;
+  readonly now: Date;
+  readonly desiredRetention: number;
+  readonly sourceWeightsNormalized: FullSourceWeights;
+  readonly randomMasteredEligibleCount: number;
+  readonly dueCandidateCount: number;
+  readonly nearDueCandidateCount: number;
+  readonly firstPassQueueBefore: readonly string[] | null;
+  readonly postMasteryShuffleBagBefore: readonly string[] | null;
+  readonly recorded: RandomSource;
+  readonly finalize: FinalizeFn;
+}
+
+/**
+ * Decision (per the Phase 7 architecture-conflict review): "Add a
+ * Post-Mastery-only pre-draw relearning-servicing tier between the
+ * existing global interrupts and the ordinary Post-Mastery weighted draw.
+ * Reuse selectActiveInternalCard() and only accept results whose reason is
+ * repair_target or spaced_confirmation; otherwise fall through to
+ * {RANDOM_MASTERED, FSRS_DUE, NEAR_DUE}."
+ *
+ * Why this is necessary (not optional polish): Post-Mastery's ordinary
+ * source set never includes ACTIVE (section 9: "do NOT introduce a
+ * four-source hybrid"), but repair_target (non-hard-cap) and
+ * spaced_confirmation are, in ordinary mode, ONLY ever reached via
+ * selectActiveInternalCard, which only runs once ACTIVE has already been
+ * chosen as the top-level source. Repair hard cap still has a GLOBAL-
+ * interrupt safety net regardless of mode (it always eventually fires at
+ * wrongPosition+7), so a repair is delayed, not stranded, without this
+ * tier -- but Spaced Confirmation has NO analogous hard cap anywhere in
+ * this engine (section 13 of the spec states only a minimum 5-card gap,
+ * never a maximum), so a card parked in SPACED_CONFIRMATION_PENDING during
+ * pure Post-Mastery mode would otherwise NEVER complete relearning. This
+ * tier is a servicing OVERLAY for already-existing relearning obligations,
+ * not a fourth weighted source: it never changes the weighted {RANDOM_
+ * MASTERED, FSRS_DUE, NEAR_DUE} draw below, is scoped to this function
+ * only (ordinary mode's own pipeline, and the global first-pass/ordinary
+ * priority order, are completely untouched), and reuses
+ * selectActiveInternalCard's existing target/hard-cap-position logic
+ * verbatim -- "serving [a target-reached repair] deterministically once
+ * that sampled target is reached preserves the intended randomized repair
+ * window" exactly as ordinary mode's own repair_target channel already
+ * does, because it IS that same channel.
+ *
+ * `active_starvation`/`active_weighted_selection` are asserted
+ * unreachable here (invariant, not a silent `if`): Post-Mastery's own
+ * entry condition (shouldUsePostMasteryMode) already guarantees zero
+ * NEW/LEARNING cards exist, so selectOrdinaryActiveCandidates --
+ * selectActiveInternalCard's own first two priority tiers' shared
+ * candidate pool -- is structurally empty whenever this function runs.
+ */
+function choosePostMasteryModeCard(input: PostMasteryModeInput): NextCardDecision {
+  const { projectedCards, schedulerPosition, now, desiredRetention, sourceWeightsNormalized, recorded, finalize } = input;
+  const firstPassQueueAfter = input.firstPassQueueBefore; // first-pass batches cannot exist in Post-Mastery mode; passed through unchanged regardless
+
+  const relearningService = selectActiveInternalCard(projectedCards, schedulerPosition, recorded);
+  if (relearningService !== null) {
+    invariant(
+      relearningService.reason === "repair_target" || relearningService.reason === "spaced_confirmation",
+      `Post-Mastery relearning-servicing tier received an unexpected reason "${relearningService.reason}" -- ` +
+        "Post-Mastery mode's own entry condition guarantees no ordinary Active acquisition candidates exist",
+    );
+    return finalize({
+      cardId: relearningService.cardId,
+      source: "ACTIVE",
+      selectionReason: relearningService.reason,
+      cardPriorityWeight: null,
+      retrievability: null,
+      intervalProgress: null,
+      emergencyFallbackApplied: false,
+      firstPassQueueAfter,
+      postMasteryShuffleBagAfter: input.postMasteryShuffleBagBefore,
+    });
+  }
+
+  const sourceEntries: { source: "RANDOM_MASTERED" | "FSRS_DUE" | "NEAR_DUE"; weight: number }[] = [];
+  if (input.randomMasteredEligibleCount > 0) {
+    sourceEntries.push({ source: "RANDOM_MASTERED", weight: sourceWeightsNormalized.randomMastered });
+  }
+  if (input.dueCandidateCount > 0) {
+    sourceEntries.push({ source: "FSRS_DUE", weight: sourceWeightsNormalized.due });
+  }
+  if (input.nearDueCandidateCount > 0) {
+    sourceEntries.push({ source: "NEAR_DUE", weight: sourceWeightsNormalized.near });
+  }
+
+  // All three Post-Mastery sources empty (and no relearning obligation was
+  // due above): a degenerate state (e.g. an empty deck) -- never crash.
+  // Post-Mastery has no analogous "ordinary Active Correct cooldown" to
+  // relax, so there is no relaxation attempt here, only the terminal state.
+  if (sourceEntries.length === 0) {
+    return finalize({
+      cardId: null,
+      source: null,
+      selectionReason: "no_card_all_unavailable",
+      cardPriorityWeight: null,
+      retrievability: null,
+      intervalProgress: null,
+      emergencyFallbackApplied: true,
+      firstPassQueueAfter,
+      postMasteryShuffleBagAfter: input.postMasteryShuffleBagBefore,
+    });
+  }
+
+  const chosenSource = weightedRandomChoice(
+    sourceEntries.map((entry) => ({ item: entry.source, weight: entry.weight })),
+    recorded,
+  );
+
+  if (chosenSource === "RANDOM_MASTERED") {
+    const selection = chooseRandomMasteredCard(projectedCards, now, input.postMasteryShuffleBagBefore, recorded);
+    invariant(selection !== null, "RANDOM_MASTERED was chosen as the source but chooseRandomMasteredCard returned null despite a positive candidate count");
+
+    return finalize({
+      cardId: selection.cardId,
+      source: "RANDOM_MASTERED",
+      selectionReason: "random_mastered_shuffle_bag",
+      cardPriorityWeight: null,
+      retrievability: null,
+      intervalProgress: null,
+      emergencyFallbackApplied: false,
+      firstPassQueueAfter,
+      postMasteryShuffleBagAfter: selection.bagAfter,
+    });
+  }
+
+  if (chosenSource === "FSRS_DUE") {
+    const selection = chooseDueCard(projectedCards, now, desiredRetention, recorded);
+    invariant(selection !== null, "FSRS_DUE was chosen as the source but chooseDueCard returned null despite a positive candidate count");
+
+    return finalize({
+      cardId: selection.cardId,
+      source: "FSRS_DUE",
+      selectionReason: "due_weighted_selection",
+      cardPriorityWeight: selection.weight,
+      retrievability: selection.retrievability,
+      intervalProgress: null,
+      emergencyFallbackApplied: false,
+      firstPassQueueAfter,
+      postMasteryShuffleBagAfter: input.postMasteryShuffleBagBefore,
+    });
+  }
+
+  const selection = chooseNearDueCard(projectedCards, now, recorded);
+  invariant(selection !== null, "NEAR_DUE was chosen as the source but chooseNearDueCard returned null despite a positive candidate count");
+
+  return finalize({
+    cardId: selection.cardId,
+    source: "NEAR_DUE",
+    selectionReason: "near_due_weighted_selection",
+    cardPriorityWeight: selection.weight,
+    retrievability: null,
+    intervalProgress: selection.intervalProgress,
+    emergencyFallbackApplied: false,
+    firstPassQueueAfter,
+    postMasteryShuffleBagAfter: input.postMasteryShuffleBagBefore,
   });
 }
