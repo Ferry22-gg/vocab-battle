@@ -10,11 +10,14 @@
  * pure transition functions and Phase 3's Active Pool functions actually
  * consume. Every other v1 parameter (wrong_retry_min_gap/hard_cap,
  * near_due_*, critical_due_*, active_starvation_max_active_source_draws,
- * streak_minimum_enemy_defeats, daily_goal_enemy_defeats) belongs to
- * later phases (the repair scheduler, FSRS/near-due adapter, source
- * scheduler, Daily Goal/streak wiring) and is deliberately NOT duplicated
- * here ahead of the module that will actually use it -- adding it now
- * would just be a second, easily-drifting copy with no reader.
+ * daily_goal_enemy_defeats) belongs to later phases (the repair
+ * scheduler, FSRS/near-due adapter, source scheduler, Daily Goal/streak
+ * wiring) and is deliberately NOT duplicated here ahead of the module
+ * that will actually use it -- adding it now would just be a second,
+ * easily-drifting copy with no reader. There is no separate
+ * streak-minimum parameter in v1 -- streak-day qualification is derived
+ * from Daily Goal completion (daily_goal_enemy_defeats), not a second
+ * threshold (spec section 26).
  */
 
 /**

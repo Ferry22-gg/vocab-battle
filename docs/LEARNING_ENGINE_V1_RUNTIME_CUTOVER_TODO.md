@@ -27,6 +27,28 @@ by anything that exists today.
   `insert_learning_engine_review_event`), `session_position` has no
   cross-check against live session state anywhere today.
 
+## Daily Goal / Streak display semantics (Phase 9 acceptance requirement)
+
+- Final v1 product rule (see spec section 26): Daily Goal = 5 enemy
+  defeats per Asia/Tokyo calendar day; a streak day is earned only on the
+  first transition from `enemies_defeated < 5` to `enemies_defeated >= 5`
+  that day. There is no separate streak-minimum threshold -- Daily Goal
+  completion IS streak-day qualification.
+- The displayed streak must reflect the authoritative persisted streak
+  (`profiles.current_streak`), whose day is earned only by Daily Goal
+  completion -- never a client-side or UI-local approximation.
+- Phase 9 / Runtime Cutover must NOT: show a streak increment at enemy 1;
+  imply "streak secured" at enemies 1-4; or show separate streak-minimum
+  progress anywhere in the UI.
+- UI may show "Daily Goal: X / 5 enemies" and the current streak. There is
+  no separate "Streak goal: 1 enemy" surface in v1.
+- Current status: the legacy Alpha `commit_answer_transaction()` streak
+  increment (`supabase/migrations/20260927000000_learning_wrong_reappearance_floor.sql`)
+  already implements this correctly today -- the entire streak-update
+  block is gated on `v_daily_goal_now_completed`. This requirement exists
+  to prevent a future v1 cutover from regressing that behavior, not
+  because a discrepancy exists today.
+
 ## Selection claim idempotency
 
 - Define the behavior for "DB commit succeeded but the response was

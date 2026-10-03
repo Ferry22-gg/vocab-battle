@@ -27,21 +27,20 @@
  * genuinely NEW Phase 8 columns.
  *
  * ---------------------------------------------------------------------
- * No new streak-minimum behavior (section 25 of this phase's brief)
+ * No separate streak-minimum concept (policy-alignment correction before
+ * Phase 9)
  * ---------------------------------------------------------------------
- * `applyStreakMinimumCompletion` only RECORDS a completion instant a
- * trusted caller tells it occurred -- it does not decide WHEN the streak
- * minimum (1 enemy defeat/local day) is satisfied. That product rule
- * lives (or will live) in the live runtime; this module creates
- * persistence capability only, per this phase's explicit instruction not
- * to "sneak in a new streak rule."
+ * v1 has no separate streak-minimum threshold -- a day counts toward the
+ * streak only when Daily Goal is completed (spec section 26). There is
+ * therefore no `streakMinimumCompletedAt`/`applyStreakMinimumCompletion`
+ * here: `dailyGoalCompletedAt`/`applyDailyGoalCompletion` above ARE the
+ * streak-day qualification event, not a separate one to track alongside.
  */
 
 import type { SelectionReason } from "@/lib/learning-engine/scheduler/next-card";
 
 /** One-to-one with the approved migration's additive `sessions` v1 columns (camelCase mirror). `null` means "not yet reached/recorded" for every timestamp/position field. */
 export interface SessionTelemetryState {
-  readonly streakMinimumCompletedAt: Date | null;
   readonly dailyGoalCompletedAt: Date | null;
   readonly questionsAfterGoal: number;
   readonly voluntaryExitPosition: number | null;
@@ -57,7 +56,6 @@ export interface SessionTelemetryState {
 
 /** The state every session starts in: every counter at 0, every timestamp/position null, matching the approved migration's own column defaults/nullability. */
 export const INITIAL_SESSION_TELEMETRY_STATE: SessionTelemetryState = {
-  streakMinimumCompletedAt: null,
   dailyGoalCompletedAt: null,
   questionsAfterGoal: 0,
   voluntaryExitPosition: null,
@@ -123,14 +121,6 @@ export function applyDailyGoalCompletion(state: SessionTelemetryState, completed
     return state;
   }
   return { ...state, dailyGoalCompletedAt: completedAt };
-}
-
-/** Section 24/25: records the streak-minimum completion instant, kept deliberately separate from Daily Goal (section 25: "Keep them separate"). Same idempotent-first-write semantics as applyDailyGoalCompletion. */
-export function applyStreakMinimumCompletion(state: SessionTelemetryState, completedAt: Date): SessionTelemetryState {
-  if (state.streakMinimumCompletedAt !== null) {
-    return state;
-  }
-  return { ...state, streakMinimumCompletedAt: completedAt };
 }
 
 export interface SessionEndSnapshot {

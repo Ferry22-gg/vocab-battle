@@ -61,7 +61,7 @@ const POLICY: ReviewEventPolicyContext = {
   experimentAssignmentId: null,
 };
 
-const NO_GOAL_CONTEXT: ReviewEventGoalContext = { dailyGoalCompleteBefore: false, streakMinimumCompleteBefore: false };
+const NO_GOAL_CONTEXT: ReviewEventGoalContext = { dailyGoalCompleteBefore: false };
 
 const NO_EXPOSURE: ReviewEventExposureContext = {
   sameDaySeenCountBefore: 1,

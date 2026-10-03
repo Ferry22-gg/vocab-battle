@@ -4,7 +4,6 @@ import {
   INITIAL_SESSION_TELEMETRY_STATE,
   applyCommittedAnswerToSessionTelemetry,
   applyDailyGoalCompletion,
-  applyStreakMinimumCompletion,
   buildSessionEndTelemetry,
   buildSessionStartTelemetry,
   deriveSecondsAfterGoal,
@@ -31,7 +30,6 @@ describe("session-telemetry helpers", () => {
     expect(state.activeStarvationGuarantees).toBe(0);
     expect(state.questionsAfterGoal).toBe(0);
     expect(state.dailyGoalCompletedAt).toBeNull();
-    expect(state.streakMinimumCompletedAt).toBeNull();
     expect(state.activePoolEnd).toBeNull();
     expect(state.dueCountEnd).toBeNull();
     expect(state.voluntaryExitPosition).toBeNull();
@@ -119,18 +117,6 @@ describe("session-telemetry helpers", () => {
 
     const afterSecond = applyDailyGoalCompletion(afterFirst, secondAt);
     expect(afterSecond.dailyGoalCompletedAt).toEqual(firstAt); // unchanged -- not overwritten
-  });
-
-  it("applyStreakMinimumCompletion is tracked separately from Daily Goal completion", () => {
-    const goalAt = new Date("2026-02-01T12:00:00.000Z");
-    const streakAt = new Date("2026-02-01T08:00:00.000Z");
-
-    let state = applyStreakMinimumCompletion(INITIAL_SESSION_TELEMETRY_STATE, streakAt);
-    state = applyDailyGoalCompletion(state, goalAt);
-
-    expect(state.streakMinimumCompletedAt).toEqual(streakAt);
-    expect(state.dailyGoalCompletedAt).toEqual(goalAt);
-    expect(state.streakMinimumCompletedAt).not.toEqual(state.dailyGoalCompletedAt);
   });
 
   it("buildSessionEndTelemetry sets end snapshot and voluntary exit position", () => {

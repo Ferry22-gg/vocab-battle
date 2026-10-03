@@ -304,7 +304,6 @@ critical_due_max_global_gap: 5
 
 active_starvation_max_active_source_draws: 40
 
-streak_minimum_enemy_defeats: 1
 daily_goal_enemy_defeats: 5
 ```
 
@@ -1499,34 +1498,45 @@ This is a specification-level normalization of the design-paper edge case; it do
 
 # 26. Daily Goal and Streak
 
-## 26.1 Streak minimum
+## 26.1 Daily Goal
 
 ```text
-1 enemy defeat per local day
-```
-
-This is intentionally a low-friction continuity target.
-
-## 26.2 Daily Goal
-
-```text
-5 enemy defeats per local day
+5 enemy defeats per Asia/Tokyo calendar day
 ```
 
 Daily Goal is displayed in enemy units, not card-count units.
 
-## 26.3 No hard stop
+There is no separate streak-minimum threshold in v1. Daily Goal completion
+IS streak-day qualification -- not two thresholds that happen to share the
+same number:
+
+- a day counts toward the streak only when the Daily Goal (5 enemy
+  defeats) is completed;
+- on the first transition that day from `enemies_defeated < 5` to
+  `enemies_defeated >= 5`, Daily Goal becomes complete AND the streak day
+  is earned, in the same instant -- exactly once;
+- defeating 1-4 enemies does not earn, preserve, or increment the streak
+  for that day;
+- defeating 6, 7, 8... enemies later that same day does not increment the
+  streak a second time -- Daily Goal is already complete;
+- starting another Session on the same day must not reset Daily Goal
+  progress, and must not increment the streak again if it was already
+  earned that day.
+
+## 26.2 No hard stop
 
 On 5th enemy defeat:
 
 - mark Daily Goal complete;
+- earn the streak day (exactly once);
 - show brief non-blocking feedback;
 - apply post-goal scheduler overlay;
 - continue the session immediately.
 
-Do not show a modal requiring the user to continue.
+Do not show a modal requiring the user to continue. Daily Goal completion
+does not end the Session.
 
-## 26.4 Enemy defeat is not a fixed learning-volume unit
+## 26.3 Enemy defeat is not a fixed learning-volume unit
 
 Do not force:
 
@@ -1771,7 +1781,6 @@ selection_reason
 scheduler_mode
 
 daily_goal_complete_before
-streak_minimum_complete_before
 
 card_status_before
 learning_stage_before
@@ -1835,7 +1844,6 @@ ended_at
 questions_answered
 correct_answers
 enemies_defeated
-streak_minimum_completed_at
 daily_goal_completed_at
 continued_after_goal
 questions_after_goal
@@ -2380,12 +2388,13 @@ has_ever_been_mastered = false
 
 must enter ordinary acquisition and cannot use short restoration until first true Mastery.
 
-## Test 21 — Daily Goal
+## Test 21 — Daily Goal and Streak
 
 ```text
-1 enemy -> streak maintained
-5 enemies -> Daily Goal complete
+1-4 enemies -> streak not earned
+first transition to 5 enemies -> Daily Goal complete, streak earned exactly once
 session continues
+6+ enemies that same day -> no additional streak increment
 ```
 
 ## Test 22 — null exam date

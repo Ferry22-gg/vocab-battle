@@ -181,7 +181,7 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
         sourceWeightNearRaw: null,
         sourceWeightRandomMasteredRaw: null,
       },
-      goal: { dailyGoalCompleteBefore: false, streakMinimumCompleteBefore: false },
+      goal: { dailyGoalCompleteBefore: false },
       exposure: {
         sameDaySeenCountBefore: 0,
         sameDayWrongCountBefore: 0,
@@ -254,7 +254,7 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
           sourceWeightNearRaw: null,
           sourceWeightRandomMasteredRaw: null,
         },
-        goal: { dailyGoalCompleteBefore: false, streakMinimumCompleteBefore: false },
+        goal: { dailyGoalCompleteBefore: false },
         exposure: { sameDaySeenCountBefore: 1, sameDayWrongCountBefore: 0, previousPresentationSchedulerPosition: null, lastSeenAtBefore: null },
         fsrs: { fsrsDBefore: null, fsrsSBefore: null, fsrsRBefore: null, fsrsDAfter: null, fsrsSAfter: null, fsrsRAfter: null, elapsedDays: null, scheduledIntervalDays: null },
         mastery: { fsrsReviewCorrectCountBefore: 0, fsrsReviewCorrectStreakBefore: 0 },
@@ -322,7 +322,7 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
         sourceWeightNearRaw: null,
         sourceWeightRandomMasteredRaw: null,
       },
-      goal: { dailyGoalCompleteBefore: false, streakMinimumCompleteBefore: false },
+      goal: { dailyGoalCompleteBefore: false },
       exposure: { sameDaySeenCountBefore: 0, sameDayWrongCountBefore: 0, previousPresentationSchedulerPosition: null, lastSeenAtBefore: null },
       fsrs: { fsrsDBefore: null, fsrsSBefore: null, fsrsRBefore: null, fsrsDAfter: null, fsrsSAfter: null, fsrsRAfter: null, elapsedDays: null, scheduledIntervalDays: null },
       mastery: { fsrsReviewCorrectCountBefore: 0, fsrsReviewCorrectStreakBefore: 0 },
@@ -390,6 +390,5 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
     expect(session!.active_starvation_guarantees).toBe(0);
     expect(session!.questions_after_goal).toBe(0);
     expect(session!.daily_goal_completed_at).toBeNull();
-    expect(session!.streak_minimum_completed_at).toBeNull();
   });
 });

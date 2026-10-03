@@ -208,7 +208,6 @@ function toReviewEventRpcParams(payload: ReviewEventPersistencePayload): Record<
     p_scheduler_mode: payload.schedulerMode,
 
     p_daily_goal_complete_before: payload.dailyGoalCompleteBefore,
-    p_streak_minimum_complete_before: payload.streakMinimumCompleteBefore,
 
     p_card_status_before: payload.cardStatusBefore,
     p_learning_stage_before: payload.learningStageBefore,
@@ -315,7 +314,6 @@ export interface PersistedReviewEventRow {
   readonly parameter_set_id: string | null;
   readonly experiment_assignment_id: string | null;
   readonly daily_goal_complete_before: boolean | null;
-  readonly streak_minimum_complete_before: boolean | null;
   readonly created_at: string;
 }
 

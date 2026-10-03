@@ -8,7 +8,11 @@
 -- corrective migration adding answer_events.session_position/
 -- scheduler_position/scheduler_revision), and
 -- 20261005000000_learning_engine_v1_telemetry_functions.sql (the two
--- trusted SECURITY DEFINER persistence functions this group exercises).
+-- trusted SECURITY DEFINER persistence functions this group exercises),
+-- and 20261006000000_learning_engine_v1_streak_minimum_removal.sql (the
+-- pre-Phase-9 policy-alignment correction removing the separate
+-- streak-minimum concept -- insert_learning_engine_review_event's calls
+-- below already reflect its corrected 54-parameter signature).
 --
 -- Covers: schema CHECK coverage for the current Phase 6/7 source/reason/
 -- mode unions (A), RLS/grant isolation on learning_engine_selection_traces
@@ -18,10 +22,11 @@
 -- position/revision agreement, cross-entity rejection, and no-card-trace
 -- rejection (D), idempotent replay for both primitives and append-only/
 -- trace-reuse rejection (E), the new answer_events position columns'
--- shape and CHECKs (F), and legacy compatibility (G).
+-- shape and CHECKs (F), legacy compatibility (G), and the streak-minimum
+-- removal's schema shape (H).
 
 BEGIN;
-SELECT plan(56);
+SELECT plan(60);
 
 -- =========================================================================
 -- Fixtures
@@ -332,7 +337,7 @@ SELECT (public.insert_learning_engine_review_event(
   12, 500, 2,
   true, 1500, null,
   :'trace_a1'::uuid, 'ACTIVE', 'active_weighted_selection', 'pre_goal_balanced',
-  false, false,
+  false,
   'LEARNING', 'FRESH', 'LEARNING', 'LEARNING_1', false,
   1, 0, null, null,
   false, false, true,
@@ -376,14 +381,14 @@ SELECT is(
 -- D2: mismatched scheduler_position / scheduler_revision against the linked trace are rejected.
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,501,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,501,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a1', :'session_a', :'trace_a1'
   ),
   '42501', 'a review event whose scheduler_position does not match its linked trace is rejected'
 );
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,500,3,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,500,3,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a1', :'session_a', :'trace_a1'
   ),
   '42501', 'a review event whose scheduler_revision does not match its linked trace is rejected'
@@ -392,21 +397,21 @@ SELECT tests.throws_sqlstate(
 -- D3: cross-entity mismatches between the event's own identity and the linked trace.
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,0,0,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.9,0,0.1,null,0.9,0,0.1,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,0,0,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.9,0,0.1,null,0.9,0,0.1,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_b1', :'session_a', :'trace_b1'
   ),
   '42501', 'a review event linking to a trace belonging to a different user is rejected'
 );
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,0,0,true,1500,null,%L,'ACTIVE','active_first_pass','pre_goal_active_focus',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.9,0,0.1,null,0.9,0,0.1,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,0,0,true,1500,null,%L,'ACTIVE','active_first_pass','pre_goal_active_focus',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.9,0,0.1,null,0.9,0,0.1,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a1', :'session_a', :'trace_a2'
   ),
   '42501', 'a review event linking to a trace belonging to a different session (same user+deck) is rejected'
 );
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,500,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,500,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1.2,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a2', :'session_a', :'trace_a1'
   ),
   '42501', 'a review event whose card does not match its linked trace''s card is rejected'
@@ -415,7 +420,7 @@ SELECT tests.throws_sqlstate(
 -- D4: a no-card trace cannot be linked to an answer event.
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,510,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.5,0.48,0.02,null,0.5,0.48,0.02,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),12,510,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.5,0.48,0.02,null,0.5,0.48,0.02,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a1', :'session_a', :'trace_a_nocard'
   ),
   '22023', 'a no_card_all_unavailable trace cannot be linked to an answer event'
@@ -424,14 +429,14 @@ SELECT tests.throws_sqlstate(
 -- D5: ordinary cross-entity rejection on the event's own identity (independent of any trace).
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_b_id', :'deck_a', :'card_a1', :'session_a'
   ),
   '42501', 'review event insert: session does not belong to the given user is rejected'
 );
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_b1', :'session_a'
   ),
   '42501', 'review event insert: card does not belong to the given deck is rejected'
@@ -443,7 +448,7 @@ SELECT (public.insert_learning_engine_review_event(
   99, 999, 99,
   false, 1, null,
   null, null, 'active_starvation', 'pre_goal_active_focus',
-  true, true,
+  true,
   'LEARNED', null, 'FORGOTTEN', null, true,
   9, 9, null, null,
   true, true, false,
@@ -474,7 +479,7 @@ SELECT (public.insert_learning_engine_review_event(
   13, 600, 2,
   true, 1500, null,
   :'trace_for_reuse_test'::uuid, 'ACTIVE', 'active_weighted_selection', 'pre_goal_balanced',
-  false, false, 'LEARNING', 'FRESH', 'LEARNING', 'LEARNING_1', false,
+  false, 'LEARNING', 'FRESH', 'LEARNING', 'LEARNING_1', false,
   1, 0, null, null, false, false, true,
   null, null, null, null, null, null, null, null, null, 0, 0,
   0.7,0.25,0.05,null,0.7,0.25,0.05,null, 1, 5,
@@ -483,7 +488,7 @@ SELECT (public.insert_learning_engine_review_event(
 
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),14,600,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),14,600,2,true,1500,null,%L,'ACTIVE','active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,0.7,0.25,0.05,null,0.7,0.25,0.05,null,1,5,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a2', :'session_a', :'trace_for_reuse_test'
   ),
   '23505', 'a selection trace already linked to one answer event cannot be linked to a second, different answer event'
@@ -496,7 +501,7 @@ SELECT tests.clear_auth();
 SELECT tests.authenticate_as(:'tester_a_id'::uuid);
 SELECT tests.throws_sqlstate(
   format(
-    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
+    $sql$select public.insert_learning_engine_review_event(%L,%L,%L,%L,%L,now(),0,0,0,true,1500,null,null,null,'active_weighted_selection','pre_goal_balanced',false,'LEARNING','FRESH','LEARNING','LEARNING_1',false,1,0,null,null,false,false,true,null,null,null,null,null,null,null,null,null,0,0,null,null,null,null,null,null,null,null,null,null,'learning-engine-v1.0','ts-fsrs@5.4.2',null,null)$sql$,
     gen_random_uuid(), :'tester_a_id', :'deck_a', :'card_a1', :'session_a'
   ),
   '42501',
@@ -566,6 +571,15 @@ SELECT is(
   'learning', 'the legacy answer_events row keeps its legacy session_mode value, never ''v1'''
 );
 SELECT tests.clear_auth();
+
+-- =========================================================================
+-- Section H: streak-minimum removal (20261006000000 corrective migration)
+-- =========================================================================
+
+SELECT hasnt_column('public', 'answer_events', 'streak_minimum_complete_before', 'answer_events.streak_minimum_complete_before no longer exists');
+SELECT hasnt_column('public', 'sessions', 'streak_minimum_completed_at', 'sessions.streak_minimum_completed_at no longer exists');
+SELECT has_column('public', 'answer_events', 'daily_goal_complete_before', 'answer_events.daily_goal_complete_before is preserved');
+SELECT has_column('public', 'sessions', 'daily_goal_completed_at', 'sessions.daily_goal_completed_at is preserved');
 
 SELECT * FROM finish();
 ROLLBACK;

@@ -167,7 +167,6 @@ export interface ReviewEventSelectionContext {
 
 export interface ReviewEventGoalContext {
   readonly dailyGoalCompleteBefore: boolean | null;
-  readonly streakMinimumCompleteBefore: boolean | null;
 }
 
 export interface ReviewEventExposureContext {
@@ -250,7 +249,6 @@ export interface ReviewEventPersistencePayload {
   readonly schedulerMode: SelectionTrace["schedulerMode"];
 
   readonly dailyGoalCompleteBefore: boolean | null;
-  readonly streakMinimumCompleteBefore: boolean | null;
 
   readonly cardStatusBefore: LearningEngineCardState["cardStatus"];
   readonly learningStageBefore: LearningEngineCardState["learningStage"];
@@ -408,7 +406,6 @@ export function buildReviewEvent(input: BuildReviewEventInput): ReviewEventPersi
     schedulerMode: selection.schedulerMode,
 
     dailyGoalCompleteBefore: goal.dailyGoalCompleteBefore,
-    streakMinimumCompleteBefore: goal.streakMinimumCompleteBefore,
 
     cardStatusBefore: beforeState.cardStatus,
     learningStageBefore: beforeState.learningStage,
