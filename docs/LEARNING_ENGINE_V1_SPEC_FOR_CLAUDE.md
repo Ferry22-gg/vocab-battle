@@ -106,8 +106,37 @@ The engine must keep the following concepts separate:
 3. **Pool / scheduler membership** — where the card can be selected from.
 4. **FSRS memory state** — D/S/R and schedule.
 5. **User-facing status label** — simplified display language.
+6. **Position counters** — see below. Do not collapse these either.
 
 Do not collapse these into one enum.
+
+## 2.1 `scheduler_position` vs `session_position` (Approved Clarification 10)
+
+The engine uses two distinct position counters, never conflated:
+
+```text
+scheduler_position
+  scope:      per (user, deck)
+  behavior:   monotonically increasing
+  lifetime:   never reset between Sessions
+  governs:    Correct cooldown windows, Repair target/hard-cap windows,
+              Spaced Confirmation gaps, Critical Due spacing (section
+              22.2), Active starvation draw counting (section 22.3), and
+              every other "N intervening cards" rule in this document.
+
+session_position
+  scope:      local to one app Session
+  behavior:   restarts in a later Session
+  governs:    nothing described in this document — it exists only as a
+              user-facing/telemetry position within the current Session,
+              distinct from the scheduler's own counters above.
+```
+
+Wherever this document says "intervening cards," "global questions," or
+a bare "position," it means `scheduler_position` unless explicitly
+stated otherwise. A future trusted implementation must not substitute
+`session_position` for `scheduler_position` in any of the above rules,
+and must not derive `scheduler_position` from session-local state.
 
 ---
 
@@ -353,6 +382,38 @@ while active_count < 20
     keep card_status = NEW until first presentation
 ```
 
+### Admission decision vs. admission persistence (Approved Clarification 14)
+
+These are two different moments, deliberately kept separate:
+
+```text
+DECIDE   (pure):   the scheduler decides, as part of computing one
+                    next-card decision, which NEW cards this decision
+                    virtually admits. These admitted card ids are part
+                    of that decision's trusted trace (section 30) —
+                    not yet durable state.
+
+PERSIST  (trusted): a future trusted selection-claim transaction is the
+                    only thing that durably commits an admission. In
+                    one atomic transaction it persists, together:
+                      - the claimed card selection itself;
+                      - the Active admissions decided above;
+                      - the resulting scheduler_position/
+                        scheduler_revision (section 2.1);
+                      - any first-pass queue change (section 9.1/9.2);
+                      - any other claim-time scheduler state change.
+```
+
+The trusted claim transaction MUST validate `scheduler_revision` (or an
+equivalent optimistic-concurrency token) against the snapshot the
+decision was computed from, and reject/retry rather than commit when
+the deck's scheduler state has moved on — otherwise a stale snapshot
+could durably commit a duplicate or conflicting admission. This
+specification does not itself define that transaction's implementation
+(see docs/LEARNING_ENGINE_V1_RUNTIME_CUTOVER_TODO.md); it only requires
+that whatever implements it preserve this decide/persist separation and
+this validation.
+
 ---
 
 # 9. First encounters
@@ -373,7 +434,41 @@ A, A, B, A, C, ...
 
 This rule prevents monotonous startup behavior.
 
-Repair hard caps and critical safety interrupts may still preempt the first-pass ordering.
+## 9.1 Formal first-pass rule (Approved Clarification 1)
+
+```text
+At first-pass BATCH creation time:
+  snapshot the currently ACTIVE + NEW + never-presented cards
+  randomly shuffle that finite snapshot
+  serve the resulting finite queue without replacement
+```
+
+- A card already served from that queue does NOT re-enter ordinary
+  weighted Active selection until the queue is exhausted — even though
+  its state has already changed from `NEW`/`FRESH` to `LEARNING`/`FRESH`
+  on first presentation (section 3 "NEW").
+- Ordinary Due, Near-Due, a sampled repair target reached, and a due
+  Spaced Confirmation do **not** preempt the first-pass queue.
+- Only the two global interrupts may preempt it:
+  - Repair hard cap (section 22.1);
+  - Critical Due (section 22.2).
+- After such an interrupt, the scheduler resumes the SAME remaining
+  queue, in the same order, without reshuffling.
+
+## 9.2 Admission during an active first-pass batch (Approved Clarification 2)
+
+- A NEW card admitted to Active (section 8.4) while a first-pass batch
+  is already in flight is **not** appended to that running queue.
+- It waits until the current finite batch is exhausted.
+- Once exhausted:
+  - if several never-presented ACTIVE+NEW cards exist, create a new
+    finite randomized first-pass batch (section 9.1) from exactly those
+    cards;
+  - if only one such card exists, no dedicated first-pass batch is
+    required for it — it may participate as an ordinary Active
+    candidate through the normal weighted-selection path instead.
+
+Repair hard caps and critical safety interrupts may still preempt the first-pass ordering (section 9.1).
 
 ---
 
@@ -470,6 +565,45 @@ The scientifically important rule is the bounded 3–6 window, not a specific pr
 
 Keep the target-gap sampling strategy configurable so beta data can replace the uniform default later.
 
+### Repair target reached vs. repair hard cap reached (Approved Clarification 3)
+
+These are two different events with two different scopes, in ordinary (non-Post-Mastery) mode:
+
+```text
+sampled repair TARGET reached (scheduler_position >= targetPosition)
+  -> does NOT force the next global question
+  -> it is serviced with priority at the next ACTIVE source slot
+     (section 19.2's internal Active-source ordering)
+
+repair HARD CAP reached (scheduler_position >= hardCapPosition)
+  -> IS a global interrupt (section 22.1/23)
+  -> remains above Critical Due in interrupt priority
+```
+
+A repair target becoming eligible is a change in *priority within the
+Active source*, not a change in *which source is drawn*. Only the hard
+cap forces a card onto the current global question regardless of
+source.
+
+### Repair collisions: selection-time only, never stored-position shifting (Approved Clarification 6)
+
+- Each repair obligation keeps its own, independently sampled
+  `targetPosition` and `hardCapPosition` (section 29.1), computed once
+  from its own `wrongPosition` and never recomputed.
+- Two repairs' positions are allowed to collide (share the same
+  absolute `scheduler_position` value). The engine does **not** mutate
+  or shift a stored `targetPosition`/`hardCapPosition` to avoid such a
+  collision.
+- Collisions are resolved at **selection time** only: whichever repair
+  is actually due is prioritized oldest-`wrongPosition`-first, exact-tie
+  broken by RNG (section 35.2). A non-winning repair is never discarded
+  — it is simply reconsidered on the next draw, with its own positions
+  unchanged.
+- This is explicitly **not** the legacy SRS behavior of shifting a
+  queue position forward to resolve a collision (the reappearance-floor
+  collision-shift some earlier/legacy scheduling code used). v1's repair
+  scheduler never shifts a stored position for this reason.
+
 ## 12.3 Repair Correct does not normally advance acquisition stage
 
 For `LEARNING_1` or `LEARNING_2`:
@@ -523,6 +657,27 @@ Wrong
 ```
 
 The first Repair Correct alone is not enough to complete relearning.
+
+## 13.1 Pool membership during and after Relearning (Approved Clarification 13)
+
+`pool_status = ACTIVE` here means exactly what section 6.2 defines it to
+mean: the short-term acquisition/relearning area, not long-term FSRS
+scheduling. A `FORGOTTEN` card is, for scheduling purposes, governed the
+same way a within-day repair is — eligible through the repair/
+Spaced-Confirmation channels (sections 12.2/13), not through ordinary
+ACTIVE weighted selection (section 19.2).
+
+On relearning completion, `pool_status` returns to `OUTSIDE` (long-term
+FSRS scheduling resumes), branching only on prior mastery history
+(section 25.2):
+
+```text
+never previously mastered (has_ever_been_mastered = false)
+  -> card_status = ACQUIRED, pool_status = OUTSIDE
+
+previously mastered (has_ever_been_mastered = true)
+  -> card_status = LEARNED, pool_status = OUTSIDE  (MASTERED RESTORED)
+```
 
 ---
 
@@ -678,6 +833,8 @@ fsrs_review_correct_count -> preserve
 start Relearning repair path
 ```
 
+(Pool-membership semantics for `pool_status = ACTIVE` here and the post-relearning outcome: section 13.1.)
+
 ---
 
 # 17. Due card priority
@@ -765,6 +922,39 @@ Use Active-source selections since the card became eligible:
 ```
 
 The aging multiplier is a soft preference only. The hard starvation rule below is authoritative.
+
+## 19.2 Internal Active-source ordering (Approved Clarification 4)
+
+When an ACTIVE source slot occurs (section 23), candidates within that
+slot are considered in this fixed priority order — only the first tier
+with an eligible candidate is used:
+
+```text
+1. Active starvation (section 22.3)
+2. target-reached Repair (section 12.2's target, not the hard cap)
+3. due Spaced Confirmation (section 13)
+4. ordinary stage-weighted Active (sections 19, 19.1)
+```
+
+Rationale, kept concise:
+
+- starvation is a guaranteed presentation on the next Active slot — it
+  cannot be deferred further without violating section 22.3;
+- a target-reached repair has a hard deadline (the hard cap, section
+  12.2) it must not be allowed to drift toward unnecessarily;
+- a due Spaced Confirmation has a minimum gap but no maximum, so it may
+  safely wait behind the two tiers above;
+- ordinary weighted Active has neither a starvation guarantee nor a
+  deadline, so it is the fallback tier.
+
+### Multiple Spaced Confirmations ready at once (Approved Clarification 5)
+
+When more than one card's Spaced Confirmation gate (tier 3 above) is
+open simultaneously:
+
+- the card whose `correct_cooldown_until_position` is smallest wins —
+  equivalently, whichever gate opened earliest is served first;
+- RNG is used only to break an exact tie.
 
 ---
 
@@ -920,6 +1110,15 @@ Priority:
 4. Normal scheduler
 ```
 
+Item 3 here is not a third GLOBAL interrupt of the same kind as items 1
+and 2 — as section 22.3 itself notes, it does not force the next global
+question to become Active. It is listed in this priority order only to
+show that, once the normal scheduler has already chosen `ACTIVE` as the
+source, starvation is the first thing checked within it. The full
+internal ordering within an Active-source slot (starvation, then
+target-reached Repair, then due Spaced Confirmation, then ordinary
+weighted Active) is section 19.2.
+
 ## 22.1 Repair hard cap
 
 A repair target may never be delayed beyond 6 intervening cards.
@@ -941,6 +1140,26 @@ If at least one Critical Due card exists and no Critical Due card has been prese
 
 Within the critical set, use the normal Due weight formula.
 
+### Exact five-question boundary (Approved Clarification 11)
+
+"Global questions" here means `scheduler_position` steps (section 2.1).
+If a Critical Due card is presented at `scheduler_position = P`
+(persisted as `last_critical_due_position = P`):
+
+```text
+positions P+1 through P+5: another Critical Due is NOT forced by this
+                            guarantee (a different interrupt/tier may
+                            still present one, e.g. the normal Due draw)
+scheduler_position reaches P+5: the guarantee's 5-question window has
+                                 fully elapsed
+position P+6: the next question MAY force Critical Due again, if at
+              least one Critical Due card still exists
+```
+
+A single persisted `last_critical_due_position` value is sufficient to
+implement this guarantee exactly — no separate rolling window or
+per-question history is required.
+
 ## 22.3 Active starvation
 
 If an eligible Active card has survived:
@@ -955,6 +1174,42 @@ Important:
 
 - This does not necessarily force the entire next global question to become Active.
 - It prevents starvation inside the Active source without destroying Review Pressure mode.
+
+### Multiple starvation candidates (Approved Clarification 8)
+
+If more than one eligible Active card simultaneously satisfies the
+40-draw threshold:
+
+- select the card with the greatest `active_draws_since_eligible`;
+- break an exact tie with RNG.
+
+This selects the card that has survived the greatest number of
+legitimate Active selection opportunities.
+
+### `active_draws_since_eligible` counter semantics (Approved Clarification 9)
+
+```text
+increment by 1 only when ALL of the following hold for one ACTIVE
+source slot:
+  - the card was genuinely eligible for ordinary weighted Active
+    selection (section 19) at that slot;
+  - an ACTIVE source slot actually occurred;
+  - a DIFFERENT card was the one selected.
+
+freeze (do not increment) while:
+  - the card's Correct cooldown (section 11.1) is active;
+  - Repair/Relearning governance makes the card unavailable for
+    ordinary Active selection (sections 12, 13).
+
+reset to 0 whenever the card is actually presented, through ANY
+applicable path (ordinary weighted Active, starvation itself, a
+serviced repair target/hard cap, or a Spaced Confirmation).
+```
+
+Do not count elapsed time or global questions for which the card was
+never a legitimate ordinary-Active candidate in the first place — doing
+so would make an ineligible card appear to be starving when it was
+simply unavailable.
 
 ## 22.4 Near-Due starvation
 
@@ -973,9 +1228,12 @@ refresh time-dependent state
     ↓
 refill Active if Fresh capacity exists
     ↓
-check hard Repair interrupt
+check hard Repair interrupt (hard cap ONLY — section 12.2/22.1)
     ↓
 check Critical Due interrupt
+    ↓
+[Post-Mastery mode only: pre-draw relearning-servicing tier —
+ target-reached Repair / due Spaced Confirmation, section 25.3]
     ↓
 choose ordinary mode/source weights
     ↓
@@ -983,7 +1241,15 @@ remove empty sources and renormalize
     ↓
 choose source
     ↓
-within-source hard Active starvation check if source=ACTIVE
+if source == ACTIVE and a first-pass batch is in flight (section 9.1):
+    serve the batch's next card (preempted only by the two interrupts
+    above, never reshuffled)
+else if source == ACTIVE:
+    within-source internal ordering (section 19.2):
+      1. Active starvation
+      2. target-reached Repair
+      3. due Spaced Confirmation
+      4. ordinary stage-weighted Active
     ↓
 choose card by source-specific weighted random
     ↓
@@ -1001,7 +1267,10 @@ function choose_next_card(user, deck, session, now):
     refresh_time_dependent_states(deck, now)
     refill_active_if_needed(deck)
 
-    # 1. Mandatory repair safety
+    # 1. Mandatory repair safety -- the HARD CAP only. A merely
+    #    target-reached repair is NOT a global interrupt (section 12.2's
+    #    "Repair target reached vs. repair hard cap reached"); it is
+    #    serviced inside the Active-source-internal ordering below.
     repair = choose_repair_hard_cap(deck, session)
     if repair != NONE:
         return Selection(repair, reason="repair_hard_cap")
@@ -1010,6 +1279,16 @@ function choose_next_card(user, deck, session, now):
     critical = choose_critical_due_interrupt(deck, session)
     if critical != NONE:
         return Selection(critical, reason="critical_due_interrupt")
+
+    # 2b. Post-Mastery mode has no ACTIVE source to service a
+    #     target-reached repair or due Spaced Confirmation through, so
+    #     this pre-draw tier checks for them before the ordinary weighted
+    #     draw (section 25.3's "Repair/Spaced Confirmation servicing in
+    #     pure Post-Mastery mode").
+    if should_use_post_mastery_free_play(deck):
+        relearning = choose_post_mastery_relearning_servicing(deck, session)
+        if relearning != NONE:
+            return Selection(relearning, reason=relearning.reason)  # "repair_target" or "spaced_confirmation"
 
     # 3. Mode selection
     if should_use_post_mastery_free_play(deck):
@@ -1022,13 +1301,31 @@ function choose_next_card(user, deck, session, now):
 
     # 4. Source-internal selection
     if source == ACTIVE:
-        starvation = active_starvation_candidate(deck)
-        if starvation != NONE:
-            card = starvation
-            reason = "active_starvation"
+        # First-pass batch in flight (section 9.1): served without
+        # reshuffling, preempted only by steps 1-2 above -- never by an
+        # ordinary Due/Near-Due/repair-target/Spaced-Confirmation check.
+        first_pass_card = serve_first_pass_batch_if_in_flight(deck)
+        if first_pass_card != NONE:
+            card = first_pass_card
+            reason = "active_first_pass"
         else:
-            card = choose_active_card(deck)
-            reason = "active_weighted_selection"
+            # Internal Active-source ordering (section 19.2): starvation
+            # > target-reached repair > due Spaced Confirmation > ordinary.
+            starvation = active_starvation_candidate(deck)
+            repair_target = repair_target_reached_candidate(deck, session)
+            spaced_confirmation = due_spaced_confirmation_candidate(deck, session)
+            if starvation != NONE:
+                card = starvation
+                reason = "active_starvation"
+            else if repair_target != NONE:
+                card = repair_target
+                reason = "repair_target"
+            else if spaced_confirmation != NONE:
+                card = spaced_confirmation
+                reason = "spaced_confirmation"
+            else:
+                card = choose_active_card(deck)
+                reason = "active_weighted_selection"
 
     else if source == FSRS_DUE:
         card = choose_due_card(deck, user.desired_retention)
@@ -1086,10 +1383,10 @@ This flag controls the short restoration route.
 ### Never-mastered card after long-term failure
 
 ```text
-RELEARNING complete -> ACQUIRED
+RELEARNING complete -> ACQUIRED, pool_status = OUTSIDE
 ```
 
-Then it must again satisfy first-time long-term mastery requirements.
+Then it must again satisfy first-time long-term mastery requirements. (Pool-membership detail: section 13.1.)
 
 ### Previously mastered card after lapse
 
@@ -1100,7 +1397,7 @@ MASTERED
 -> Repair Correct
 -> 5-card minimum gap
 -> Spaced Correct
--> MASTERED RESTORED
+-> MASTERED RESTORED, pool_status = OUTSIDE
 ```
 
 Do not erase the FSRS lapse history.
@@ -1156,6 +1453,22 @@ Keep:
 ```text
 0.30 / 0.60 / 0.10
 ```
+
+### Repair/Spaced Confirmation servicing in pure Post-Mastery mode (Approved Clarification 3)
+
+Pure Post-Mastery mode (this section's three-source set) has **no**
+`ACTIVE` weighted source to service a target-reached repair or a due
+Spaced Confirmation through (section 19.2's tier 2/3 assume an ACTIVE
+source exists). A target-reached Repair or a due Spaced Confirmation
+can still legitimately arise in Post-Mastery mode (e.g. a
+previously-mastered card lapses, section 25.2). These are therefore
+serviced through the **pre-draw Post-Mastery relearning tier** — i.e.
+checked and serviced before the ordinary `RANDOM_MASTERED`/`FSRS_DUE`/
+`NEAR_DUE` weighted draw runs, the same way the repair hard cap and
+Critical Due interrupts (section 22/23) are checked before the
+ordinary-mode weighted draw. The repair hard cap remains a true global
+interrupt in Post-Mastery mode exactly as in ordinary mode (section 3
+of this document's clarifications).
 
 ## 25.4 Random Mastered sampling
 
@@ -1659,15 +1972,22 @@ Possible example:
 
 Do not crash.
 
-Recommended fallback order:
+Recommended fallback order (exact mechanics: Approved Clarification 7):
 
 1. process any repair/critical safety that becomes eligible;
 2. admit NEW only if Fresh capacity exists;
 3. wait/advance animation only if the product supports real time between questions;
-4. otherwise temporarily relax the least important non-safety randomness/cooldown constraint in a logged emergency fallback;
+4. otherwise, relax **only** the ordinary Active Correct cooldown (section 11.1) — and nothing else:
+   - **never** relax the repair minimum gap or repair hard cap (section 12.2);
+   - **never** relax the Spaced Confirmation minimum gap (section 13);
+   - **never** relax any other memory-safety/relearning invariant (section 34);
+   - among the ordinary Active cards whose cooldown is being relaxed, choose the one closest to becoming cooldown-eligible on its own (smallest remaining gap to its `correct_cooldown_until_position`); break an exact tie with RNG;
 5. never violate a repair hard cap or corrupt state.
 
-Every emergency fallback must emit an invariant log.
+Every emergency fallback must emit an invariant log, specifically
+setting `emergency_fallback_applied = true` and recording
+`selection_reason = emergency_cooldown_relaxation` (the Phase 6/7
+implementation's exact field/reason names) for that decision.
 
 ## 35.2 Multiple repair collisions
 
@@ -1678,6 +1998,10 @@ oldest Wrong / earliest hard cap first
 ```
 
 Random tie-break for equal priority.
+
+Selection-time-only resolution, and why this differs from legacy SRS
+queue-position shifting: section 12.2's "Repair collisions" subsection
+(Approved Clarification 6).
 
 ## 35.3 Due backlog of hundreds of cards
 
@@ -1980,10 +2304,30 @@ count=3, streak=2 -> Mastered
 
 ## Test 14 — Wrong between long-term successes
 
-Sequence:
+Sequence (Approved Clarification 12: this is a sequence of *qualifying
+scheduled FSRS long-term review events* for the card, section 15 —
+**not** five consecutive global questions; arbitrarily many Active/
+repair/Near-Due/Random-Mastered events may occur between them):
 
 ```text
 Correct, Correct, Wrong, Correct, Correct
+```
+
+The `Wrong` above is a qualifying long-term/Near-Due Wrong (section
+16.3), so it triggers the real Relearning detour (section 13), not a
+same-day repair:
+
+```text
+Correct (qualifying)  -> count 1, streak 1
+Correct (qualifying)  -> count 2, streak 2
+Wrong    (qualifying) -> streak resets to 0, count preserved (2);
+                          card_status -> FORGOTTEN, pool_status -> ACTIVE,
+                          relearning_phase -> REPAIR_PENDING (section 13.1)
+  ... Repair Correct (does not increment count/streak, section 12.3) ...
+  ... Spaced Correct (does not increment count/streak, section 13;
+      completes relearning -> ACQUIRED or LEARNED, section 13.1) ...
+Correct (qualifying, resumes the mastery sequence) -> count 3, streak 1
+Correct (qualifying)                                -> count 4, streak 2
 ```
 
 must end with:
@@ -2182,3 +2526,78 @@ Its defining architecture is the integration of:
 The system should optimize learning quality without presenting the learner with a conventional queue-completion experience.
 
 **The scheduler owns learning priority. The game layer owns motivation and expression. Neither should silently rewrite the other's rules.**
+
+---
+
+# 44. Approved v1 Clarifications
+
+The specification author has approved the following 14 interpretations
+as formal v1 rules. Each is now incorporated into its normative section
+above (not merely appended here); this section is an index, not an
+appendix of competing rules.
+
+1. **Initial first-pass** — finite shuffled snapshot of ACTIVE+NEW+
+   never-presented cards, served without replacement; a served card does
+   not re-enter ordinary selection until the batch is exhausted; only
+   the repair hard cap and Critical Due may preempt it, and resume
+   without reshuffling. → section 9.1.
+2. **New cards admitted during first-pass** — never appended to a
+   running batch; wait for exhaustion, then a new batch (if ≥2
+   candidates) or ordinary Active participation (if exactly 1). →
+   section 9.2.
+3. **Repair target vs. global interrupt** — a reached repair target does
+   not force the next global question, only priority at the next Active
+   slot; only the repair hard cap is a global interrupt, still above
+   Critical Due; pure Post-Mastery mode services target-reached repair/
+   due Spaced Confirmation through a pre-draw relearning tier instead
+   (no ACTIVE source exists there). → sections 12.2, 25.3.
+4. **Active internal priority** — starvation > target-reached Repair >
+   due Spaced Confirmation > ordinary weighted Active. → section 19.2.
+5. **Multiple Spaced Confirmations** — smallest
+   `correct_cooldown_until_position` (earliest-opened gate) wins; RNG
+   only for exact ties. → section 19.2.
+6. **Repair collisions** — independently sampled positions, never
+   mutated/shifted; resolved at selection time only (oldest Wrong/
+   earliest hard cap first, RNG for exact ties); explicitly distinct
+   from legacy SRS queue-position shifting. → section 12.2.
+7. **All-sources-unavailable emergency fallback** — relax ONLY the
+   ordinary Active Correct cooldown, never any repair/Spaced-
+   Confirmation/safety invariant; choose the closest-to-eligible
+   ordinary Active card, RNG only for exact ties; log
+   `emergency_fallback_applied`/`emergency_cooldown_relaxation`. →
+   section 35.1.
+8. **Multiple Active starvation candidates** — greatest
+   `active_draws_since_eligible` wins; RNG for exact ties. → section
+   22.3.
+9. **Active starvation counter semantics** — increment only on a
+   legitimate-but-not-selected ordinary Active opportunity; freeze
+   during Correct cooldown or repair/relearning governance; reset to 0
+   on any actual presentation. → section 22.3.
+10. **Scheduler position scope** — `scheduler_position` is per (user,
+    deck), monotonic, never reset between Sessions; distinct from the
+    Session-local `session_position`; "intervening cards"/"global
+    questions" throughout this document mean `scheduler_position`. →
+    section 2.1.
+11. **Critical Due five-question boundary** — after a forced Critical
+    Due at position P, positions P+1..P+5 are not forced again by this
+    guarantee; P+6 may force again; a single `last_critical_due_position`
+    is sufficient. → section 22.2.
+12. **Test 14 semantics** — the Correct/Correct/Wrong/Correct/Correct
+    sequence is qualifying scheduled FSRS long-term review events, not
+    five consecutive global questions; the Wrong triggers the real
+    Relearning detour, whose Repair/Spaced Corrects do not themselves
+    count; final result unchanged (count 4, streak 2, Mastered). →
+    "Test 14" (section 38).
+13. **Long-term/Near-Due Wrong pool membership** — `FORGOTTEN` +
+    `pool_status = ACTIVE` (the short-term acquisition/relearning area,
+    not long-term FSRS) + `REPAIR_PENDING`; completion returns
+    `pool_status = OUTSIDE`, branching to `ACQUIRED` (never mastered) or
+    `LEARNED` (previously mastered). → sections 13.1, 16.3, 25.2.
+14. **Active admission persistence timing** — the pure scheduler only
+    *decides* admissions as part of a trace; a future trusted selection-
+    claim transaction *persists* them atomically together with the
+    claimed card, `scheduler_position`/`scheduler_revision`, and
+    first-pass queue state, validating `scheduler_revision` (or
+    equivalent) to reject stale snapshots. Not implemented by this
+    clarification pass — see `docs/LEARNING_ENGINE_V1_RUNTIME_CUTOVER_TODO.md`.
+    → section 8.4.
