@@ -2,7 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireOnboardedTester } from "@/lib/auth/dal";
 import { getDeckDetail, listCardsForDeck } from "@/lib/decks/dal";
+import { countMasteredCards } from "@/lib/learning-engine/progress/mastery";
 import { SelectDeckButton } from "@/app/decks/select-deck-button";
+import { CardStatusBadge } from "@/app/decks/card-status-badge";
 
 /**
  * Minimal P3 Deck detail screen (MVP_UI_SPEC.md section 11): a content
@@ -26,6 +28,10 @@ export default async function DeckDetailPage(props: PageProps<"/decks/[deckId]">
   }
 
   const cards = await listCardsForDeck(deckId);
+  // Derived from the same query above, not a second DAL round trip -- see
+  // getMasteredCountsByDeck()'s doc comment (lib/decks/dal.ts) for why
+  // `user_deck_learning_state.mastered_count` is never read for this.
+  const masteredCount = countMasteredCards(cards.map((card) => card.cardStatus));
   const selected = deck.id === tester.selectedDeckId;
   // Only the caller's own decks can ever be selected (select_deck() only
   // succeeds for a deck the caller owns, DATABASE_SCHEMA.md 10.8) -- an
@@ -44,7 +50,7 @@ export default async function DeckDetailPage(props: PageProps<"/decks/[deckId]">
           <h1 className="text-xl font-extrabold text-white">{deck.name}</h1>
           {deck.description && <p className="mt-1 text-sm text-emerald-100/75">{deck.description}</p>}
           <p className="mt-2 text-xs text-emerald-100/60">
-            {deck.cardCount} {deck.cardCount === 1 ? "card" : "cards"}
+            {deck.cardCount} {deck.cardCount === 1 ? "card" : "cards"} · {masteredCount} Mastered
           </p>
 
           <div className="mt-3">
@@ -64,9 +70,15 @@ export default async function DeckDetailPage(props: PageProps<"/decks/[deckId]">
         ) : (
           <div className="flex flex-col gap-2 pb-4">
             {cards.map((card) => (
-              <div key={card.id} className="rounded-xl border border-white/10 bg-emerald-950/60 px-3.5 py-3">
-                <p className="text-sm font-semibold text-white">{card.front}</p>
-                <p className="mt-0.5 text-sm text-emerald-100/70">{card.back}</p>
+              <div
+                key={card.id}
+                className="flex items-start justify-between gap-3 rounded-xl border border-white/10 bg-emerald-950/60 px-3.5 py-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">{card.front}</p>
+                  <p className="mt-0.5 text-sm text-emerald-100/70">{card.back}</p>
+                </div>
+                <CardStatusBadge cardStatus={card.cardStatus} />
               </div>
             ))}
           </div>

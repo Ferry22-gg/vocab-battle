@@ -199,3 +199,26 @@ export const POST_MASTERY_POST_GOAL_SOURCE_WEIGHTS = {
   BALANCED: { randomMastered: 0.55, due: 0.25, near: 0.2 },
   REVIEW_PRESSURE: { randomMastered: 0.3, due: 0.6, near: 0.1 },
 } as const;
+
+// ---------------------------------------------------------------------------
+// Deck Progress (section 28.2) -- Phase 9
+// ---------------------------------------------------------------------------
+
+/**
+ * Section 28.2's exact provisional Deck Progress contribution table. UX
+ * process weights only -- NOT FSRS retrievability, recall probability, or
+ * mastery probability (spec section 28.2's own caveat). A lapse
+ * (LEARNED -> FORGOTTEN) may reduce Deck Progress; that is allowed.
+ *
+ * Consumed by lib/learning-engine/progress/deck-progress.ts. See that
+ * module's header for why no live UI reads this yet.
+ */
+export const DECK_PROGRESS_CONTRIBUTION = {
+  NEW: 0.0,
+  FRESH: 0.1,
+  LEARNING_1: 0.3,
+  LEARNING_2: 0.5,
+  ACQUIRED: 0.7,
+  LEARNED: 1.0,
+  FORGOTTEN: 0.5,
+} as const satisfies Record<"NEW" | "FRESH" | "LEARNING_1" | "LEARNING_2" | "ACQUIRED" | "LEARNED" | "FORGOTTEN", number>;

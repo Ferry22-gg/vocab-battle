@@ -21,7 +21,14 @@ import Image from "next/image";
  * deliberately does not wire up fake navigation/selection behavior; it
  * only visually echoes the reference's card treatment.
  */
-export function SessionContextCard({ deckName }: { readonly deckName: string | null }) {
+export function SessionContextCard({
+  deckName,
+  masteredCount,
+}: {
+  readonly deckName: string | null;
+  /** Current (not historical) Mastered count for this deck (spec section 28.1) -- omitted entirely when no deck is selected. */
+  readonly masteredCount: number;
+}) {
   return (
     <div className="relative flex h-28 overflow-hidden rounded-2xl border border-white/10 bg-emerald-950/80 shadow-md">
       <div className="relative w-[34%] shrink-0" aria-hidden="true">
@@ -45,6 +52,9 @@ export function SessionContextCard({ deckName }: { readonly deckName: string | n
           </span>
           <span className="truncate text-base font-medium text-emerald-50">{deckName ?? "No deck selected"}</span>
         </div>
+        {deckName !== null && (
+          <p className="truncate text-xs text-emerald-100/60">{masteredCount} Mastered</p>
+        )}
       </div>
 
       <div

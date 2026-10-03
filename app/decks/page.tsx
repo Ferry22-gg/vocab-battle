@@ -29,7 +29,13 @@ export default async function DecksPage() {
         {selectedDeck && (
           <section className="mb-6">
             <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-emerald-100/60">Selected Deck</h2>
-            <DeckRow deckId={selectedDeck.id} name={selectedDeck.name} cardCount={selectedDeck.cardCount} selected />
+            <DeckRow
+              deckId={selectedDeck.id}
+              name={selectedDeck.name}
+              cardCount={selectedDeck.cardCount}
+              masteredCount={selectedDeck.masteredCount}
+              selected
+            />
           </section>
         )}
 
@@ -40,7 +46,14 @@ export default async function DecksPage() {
           ) : (
             <div className="flex flex-col gap-2.5">
               {otherDecks.map((deck) => (
-                <DeckRow key={deck.id} deckId={deck.id} name={deck.name} cardCount={deck.cardCount} selected={false} />
+                <DeckRow
+                  key={deck.id}
+                  deckId={deck.id}
+                  name={deck.name}
+                  cardCount={deck.cardCount}
+                  masteredCount={deck.masteredCount}
+                  selected={false}
+                />
               ))}
             </div>
           )}

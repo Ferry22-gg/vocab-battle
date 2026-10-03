@@ -60,16 +60,17 @@ describe("getOwnedDecksWithCardCounts", () => {
     ]);
   });
 
-  it("returns an empty list with no card-count queries when the caller owns no decks", async () => {
+  it("returns an empty list with no per-deck card-count queries when the caller owns no decks (the one Mastered-counts-by-deck query still runs)", async () => {
     const decksChain = makeChain({ data: [], error: null });
     const from = vi.fn().mockReturnValue(decksChain.chain);
     vi.mocked(createClient).mockResolvedValue({ from } as never);
 
     await expect(getOwnedDecksWithCardCounts()).resolves.toEqual([]);
-    expect(from).toHaveBeenCalledTimes(1);
+    // 1 for `decks`, 1 for getMasteredCountsByDeck()'s single `user_card_progress` query -- never one per deck.
+    expect(from).toHaveBeenCalledTimes(2);
   });
 
-  it("attaches a real card count (head-count query) per deck", async () => {
+  it("attaches a real card count (head-count query per deck) and a current Mastered count (one query total)", async () => {
     const decksChain = makeChain({
       data: [
         { id: "deck-1", name: "Deck One", description: null },
@@ -79,23 +80,32 @@ describe("getOwnedDecksWithCardCounts", () => {
     });
     const cardsChain1 = makeChain({ data: null, error: null, count: 3 });
     const cardsChain2 = makeChain({ data: null, error: null, count: 0 });
+    const masteredChain = makeChain({
+      data: [
+        { cards: { deck_id: "deck-1", deleted_at: null } },
+        { cards: { deck_id: "deck-1", deleted_at: null } },
+      ],
+      error: null,
+    });
 
     const from = vi
       .fn()
       .mockReturnValueOnce(decksChain.chain)
       .mockReturnValueOnce(cardsChain1.chain)
-      .mockReturnValueOnce(cardsChain2.chain);
+      .mockReturnValueOnce(cardsChain2.chain)
+      .mockReturnValueOnce(masteredChain.chain);
     vi.mocked(createClient).mockResolvedValue({ from } as never);
 
     await expect(getOwnedDecksWithCardCounts()).resolves.toEqual([
-      { id: "deck-1", name: "Deck One", description: null, cardCount: 3 },
-      { id: "deck-2", name: "Deck Two", description: "desc", cardCount: 0 },
+      { id: "deck-1", name: "Deck One", description: null, cardCount: 3, masteredCount: 2 },
+      { id: "deck-2", name: "Deck Two", description: "desc", cardCount: 0, masteredCount: 0 },
     ]);
 
     const cardsCall1SelectArgs = cardsChain1.calls.find((c) => c.method === "select")?.args;
     expect(cardsCall1SelectArgs?.[1]).toEqual({ count: "exact", head: true });
     expect(cardsChain1.calls).toContainEqual({ method: "eq", args: ["deck_id", "deck-1"] });
     expect(cardsChain2.calls).toContainEqual({ method: "eq", args: ["deck_id", "deck-2"] });
+    expect(masteredChain.calls).toContainEqual({ method: "eq", args: ["card_status", "LEARNED"] });
   });
 
   it("throws a server-safe error on a genuine DB failure", async () => {
@@ -174,16 +184,19 @@ describe("listCardsForDeck", () => {
     expect(chain.calls).toContainEqual({ method: "order", args: ["sort_order", { ascending: true }] });
   });
 
-  it("returns front/back cards as-is", async () => {
+  it("returns front/back cards with each card's own cardStatus (defaulting to NEW when no progress row exists)", async () => {
     const rows = [
-      { id: "card-1", front: "abundant", back: "豊富な" },
-      { id: "card-2", front: "ambiguous", back: "曖昧な" },
+      { id: "card-1", front: "abundant", back: "豊富な", user_card_progress: [{ card_status: "LEARNING" }] },
+      { id: "card-2", front: "ambiguous", back: "曖昧な", user_card_progress: [] },
     ];
     const chain = makeChain({ data: rows, error: null });
     const from = vi.fn().mockReturnValue(chain.chain);
     vi.mocked(createClient).mockResolvedValue({ from } as never);
 
-    await expect(listCardsForDeck("deck-1")).resolves.toEqual(rows);
+    await expect(listCardsForDeck("deck-1")).resolves.toEqual([
+      { id: "card-1", front: "abundant", back: "豊富な", cardStatus: "LEARNING" },
+      { id: "card-2", front: "ambiguous", back: "曖昧な", cardStatus: "NEW" },
+    ]);
   });
 
   it("returns an empty list (not an error) for an inaccessible deck", async () => {

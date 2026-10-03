@@ -1,5 +1,5 @@
 import { requireOnboardedTester } from "@/lib/auth/dal";
-import { getDeckById } from "@/lib/decks/dal";
+import { getDeckById, getMasteredCountsByDeck } from "@/lib/decks/dal";
 import { getProfileStats } from "@/lib/profile/dal";
 import { getTodayDailyGoalProgress } from "@/lib/learning/daily-goal-dal";
 import { getActiveSessionForCurrentUser } from "@/lib/sessions/dal";
@@ -23,16 +23,18 @@ import { BottomNav } from "@/app/home/bottom-nav";
 export default async function HomePage() {
   const tester = await requireOnboardedTester();
 
-  const [deck, profileStats, dailyGoal, activeSession] = await Promise.all([
+  const [deck, masteredCounts, profileStats, dailyGoal, activeSession] = await Promise.all([
     // selectedDeckId is guaranteed set by the guard above, but the deck row
     // itself is supplementary display info -- if loading it fails, show the
     // rest of Home rather than taking down the whole page over it.
     tester.selectedDeckId ? getDeckById(tester.selectedDeckId).catch(() => null) : Promise.resolve(null),
+    getMasteredCountsByDeck(),
     getProfileStats(),
     getTodayDailyGoalProgress(),
     // Read-only: never starts or resumes a session just by rendering Home.
     getActiveSessionForCurrentUser(),
   ]);
+  const masteredCount = tester.selectedDeckId ? (masteredCounts.get(tester.selectedDeckId) ?? 0) : 0;
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden bg-emerald-950">
@@ -50,7 +52,7 @@ export default async function HomePage() {
 
         <div className="flex flex-col gap-3 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+114px)]">
           <DailyGoalCard enemiesDefeated={dailyGoal.enemiesDefeated} completed={dailyGoal.completed} />
-          <SessionContextCard deckName={deck?.name ?? null} />
+          <SessionContextCard deckName={deck?.name ?? null} masteredCount={masteredCount} />
         </div>
       </div>
 

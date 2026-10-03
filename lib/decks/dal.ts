@@ -15,6 +15,7 @@
 
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+import type { CardStatus } from "@/lib/learning-engine/state";
 
 const STARTER_DECK_COLUMNS = "id, name, description";
 
@@ -117,20 +118,62 @@ export type DeckSummary = {
   name: string;
   description: string | null;
   cardCount: number;
+  masteredCount: number;
 };
 
 const OWNED_DECK_COLUMNS = "id, name, description";
 
 /**
+ * Current (not historical) Mastered count per deck -- `card_status =
+ * 'LEARNED'`, excluding soft-deleted cards -- the same authoritative
+ * aggregation lib/stats/dal.ts's getMasteredCardCount() already uses
+ * globally (spec section 28.1/34.1), bucketed by `deck_id` in one query
+ * rather than one query per deck.
+ *
+ * Deliberately does NOT read `user_deck_learning_state.mastered_count`:
+ * that column is only ever set once, by
+ * supabase/migrations/20261001000000_learning_engine_v1_additive_schema.sql's
+ * backfill `INSERT ... ON CONFLICT DO NOTHING` -- no trigger or trusted
+ * function updates it on any live answer today, so it goes stale the
+ * moment a tester answers another card. See
+ * docs/LEARNING_ENGINE_V1_RUNTIME_CUTOVER_TODO.md.
+ *
+ * Fetches/filters in TypeScript rather than a nested-relationship
+ * PostgREST filter, matching lib/stats/dal.ts's getMasteredCardCount()
+ * convention exactly (see that function's own doc comment for why).
+ */
+export async function getMasteredCountsByDeck(): Promise<Map<string, number>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("user_card_progress")
+    .select("cards!inner(deck_id, deleted_at)")
+    .eq("card_status", "LEARNED");
+
+  if (error) {
+    throw new Error("Failed to count mastered cards by deck", { cause: error });
+  }
+
+  const rows = (data ?? []) as unknown as readonly { cards: { deck_id: string; deleted_at: string | null } }[];
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.cards.deleted_at !== null) continue;
+    counts.set(row.cards.deck_id, (counts.get(row.cards.deck_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
  * Lists the caller's own (non-template, non-official) decks with real card
- * counts, for the Decks screen (`app/decks/page.tsx`). `is_official =
- * false` excludes official starter templates from this list -- combined
- * with RLS (owner_user_id = auth.uid() OR is_official OR admin), the only
- * rows an ordinary tester can see with is_official = false are their own,
- * so no explicit owner_user_id filter is needed (same no-client-supplied-
- * identity convention as the rest of this codebase). Card counts are
- * fetched in parallel, one head-count query per deck -- simple and correct
- * at the Alpha's deck-per-tester scale; revisit if that scale changes.
+ * counts and current Mastered counts, for the Decks screen
+ * (`app/decks/page.tsx`). `is_official = false` excludes official starter
+ * templates from this list -- combined with RLS (owner_user_id = auth.uid()
+ * OR is_official OR admin), the only rows an ordinary tester can see with
+ * is_official = false are their own, so no explicit owner_user_id filter is
+ * needed (same no-client-supplied-identity convention as the rest of this
+ * codebase). Card counts are fetched in parallel, one head-count query per
+ * deck -- simple and correct at the Alpha's deck-per-tester scale; revisit
+ * if that scale changes. Mastered counts are fetched once for every deck
+ * together (getMasteredCountsByDeck()), not per deck.
  */
 export const getOwnedDecksWithCardCounts = cache(async (): Promise<DeckSummary[]> => {
   const supabase = await createClient();
@@ -149,13 +192,17 @@ export const getOwnedDecksWithCardCounts = cache(async (): Promise<DeckSummary[]
 
   const decks = data ?? [];
 
-  const cardCounts = await Promise.all(decks.map((deck) => getCardCountForDeck(deck.id)));
+  const [cardCounts, masteredCounts] = await Promise.all([
+    Promise.all(decks.map((deck) => getCardCountForDeck(deck.id))),
+    getMasteredCountsByDeck(),
+  ]);
 
   return decks.map((deck, i) => ({
     id: deck.id,
     name: deck.name,
     description: deck.description,
     cardCount: cardCounts[i],
+    masteredCount: masteredCounts.get(deck.id) ?? 0,
   }));
 });
 
@@ -219,16 +266,27 @@ export type DeckCard = {
   id: string;
   front: string;
   back: string;
+  /** The caller's own learning-engine status for this card (spec section 3.1), for CardStatusBadge. Defaults to 'NEW' when no `user_card_progress` row exists yet -- e.g. an official template the caller is viewing but has never duplicated/owned (no per-user progress row is ever created for a template's own cards). */
+  cardStatus: CardStatus;
 };
 
-const DECK_CARD_COLUMNS = "id, front, back";
+const DECK_CARD_COLUMNS = "id, front, back, user_card_progress(card_status)";
 
 /**
- * Lists a deck's non-deleted cards in display order, for the Deck detail
- * card list. Scoped by RLS the same way as getDeckDetail -- a deck the
- * caller cannot see simply returns an empty list. Callers that need to
- * distinguish "deck inaccessible" from "deck accessible but empty" must
- * check getDeckDetail() first, which this module's own page does.
+ * Lists a deck's non-deleted cards in display order, with each card's
+ * learner-facing status (via CardStatusBadge/toUserFacingCardStatus), for
+ * the Deck detail card list. Scoped by RLS the same way as getDeckDetail --
+ * a deck the caller cannot see simply returns an empty list. Callers that
+ * need to distinguish "deck inaccessible" from "deck accessible but empty"
+ * must check getDeckDetail() first, which this module's own page does.
+ *
+ * Still queries FROM `cards` (not `user_card_progress`) so an official,
+ * not-yet-duplicated template deck's cards still list correctly even
+ * though the caller has no progress rows for them -- `user_card_progress`
+ * is embedded as a to-many relation (PostgREST has no way to know the
+ * (user_id, card_id) uniqueness constraint makes it effectively 0-or-1
+ * here), RLS-scoped to the caller's own row, so `[0]` is always either
+ * absent or the caller's own single row, never another user's.
  */
 export async function listCardsForDeck(deckId: string): Promise<DeckCard[]> {
   const supabase = await createClient();
@@ -244,7 +302,19 @@ export async function listCardsForDeck(deckId: string): Promise<DeckCard[]> {
     throw new Error("Failed to load deck cards", { cause: error });
   }
 
-  return data ?? [];
+  const rows = (data ?? []) as unknown as readonly {
+    id: string;
+    front: string;
+    back: string;
+    user_card_progress: readonly { card_status: CardStatus }[];
+  }[];
+
+  return rows.map((row) => ({
+    id: row.id,
+    front: row.front,
+    back: row.back,
+    cardStatus: row.user_card_progress[0]?.card_status ?? "NEW",
+  }));
 }
 
 /**
