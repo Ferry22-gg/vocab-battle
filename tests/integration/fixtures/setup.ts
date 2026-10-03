@@ -75,8 +75,22 @@ export async function setupIntegrationFixtures(): Promise<void> {
 }
 
 async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string): Promise<void> {
+  // answer_events MUST be deleted before learning_engine_selection_traces
+  // (Phase 8): a v1 answer_events row's selection_trace_id references a
+  // trace with ON DELETE RESTRICT, so deleting the trace first while an
+  // answer_event still points to it is rejected. Deleting the REFERENCING
+  // row (answer_events) first is always safe; only then is the
+  // (now-unreferenced) trace safe to delete -- which in turn must still
+  // happen before sessions/cards/decks below, since the trace itself
+  // references those three with RESTRICT too.
   const { error: answerEventsError } = await admin.from("answer_events").delete().eq("user_id", userId);
   if (answerEventsError) throw answerEventsError;
+
+  const { error: selectionTracesError } = await admin
+    .from("learning_engine_selection_traces")
+    .delete()
+    .eq("user_id", userId);
+  if (selectionTracesError) throw selectionTracesError;
 
   const { error: xpEventsError } = await admin.from("xp_events").delete().eq("user_id", userId);
   if (xpEventsError) throw xpEventsError;

@@ -42,6 +42,8 @@ export const WRONG_FLOOR_TESTER = tester("912"); // scenario 17: Learning Wrong 
 export const DECK_SELECTION_TESTER = tester("913"); // P3 Decks: select_deck() / deck-switch session behavior
 export const STATS_TESTER_A = tester("914"); // P3 Stats: aggregation across daily_user_stats/profiles/user_card_progress
 export const STATS_TESTER_B = tester("915"); // P3 Stats: cross-tester isolation
+export const TELEMETRY_TESTER_A = tester("916"); // Learning Engine v1 Phase 8: telemetry persistence
+export const TELEMETRY_TESTER_B = tester("917"); // Learning Engine v1 Phase 8: telemetry cross-entity rejection
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -59,6 +61,8 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   DECK_SELECTION_TESTER,
   STATS_TESTER_A,
   STATS_TESTER_B,
+  TELEMETRY_TESTER_A,
+  TELEMETRY_TESTER_B,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;

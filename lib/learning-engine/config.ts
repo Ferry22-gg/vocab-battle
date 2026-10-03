@@ -30,6 +30,22 @@
 export const LEARNING_ENGINE_POLICY_VERSION = "learning-engine-v1.0";
 
 /**
+ * Phase 8 (telemetry, section 28 of the normative spec): an explicit,
+ * application-level FSRS algorithm/config version identifier for
+ * `answer_events.fsrs_version` -- "prefer a stable application-level
+ * version identifier representing the algorithm/config semantics used,
+ * not a value guessed from runtime behavior." No such constant existed
+ * anywhere in the codebase before this phase (verified by audit); this is
+ * the one canonical source other telemetry call sites must import rather
+ * than re-deriving. Pinned to the exact `ts-fsrs` package version
+ * (package.json) this engine's FSRS adapter (lib/learning-engine/fsrs/
+ * adapter.ts) is built against -- update by hand if that pin ever
+ * changes, the same precedent LEARNING_ENGINE_POLICY_VERSION above
+ * already sets for a value with no shared config table.
+ */
+export const LEARNING_ENGINE_FSRS_VERSION = "ts-fsrs@5.4.2";
+
+/**
  * Section 15: first-time long-term Mastery requires both
  * fsrs_review_correct_count >= this AND fsrs_review_correct_streak >= the
  * streak threshold below. Only qualifying scheduled FSRS long-term
