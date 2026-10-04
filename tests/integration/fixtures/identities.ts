@@ -44,6 +44,8 @@ export const STATS_TESTER_A = tester("914"); // P3 Stats: aggregation across dai
 export const STATS_TESTER_B = tester("915"); // P3 Stats: cross-tester isolation
 export const TELEMETRY_TESTER_A = tester("916"); // Learning Engine v1 Phase 8: telemetry persistence
 export const TELEMETRY_TESTER_B = tester("917"); // Learning Engine v1 Phase 8: telemetry cross-entity rejection
+export const RC_B_CLAIM_TESTER_A = tester("918"); // Learning Engine v1 Runtime Cutover RC-B: selection claim transaction
+export const RC_B_CLAIM_TESTER_B = tester("919"); // Learning Engine v1 Runtime Cutover RC-B: cross-user isolation
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -63,6 +65,8 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   STATS_TESTER_B,
   TELEMETRY_TESTER_A,
   TELEMETRY_TESTER_B,
+  RC_B_CLAIM_TESTER_A,
+  RC_B_CLAIM_TESTER_B,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;

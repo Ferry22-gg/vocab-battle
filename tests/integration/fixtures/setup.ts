@@ -75,6 +75,14 @@ export async function setupIntegrationFixtures(): Promise<void> {
 }
 
 async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string): Promise<void> {
+  // selection_claims (Runtime Cutover RC-B) MUST be deleted first, before
+  // anything it references with ON DELETE RESTRICT -- sessions, decks,
+  // cards, and learning_engine_selection_traces all reject a delete while
+  // a claim still points to them. Nothing else references INTO
+  // selection_claims, so deleting it first is always safe.
+  const { error: selectionClaimsError } = await admin.from("selection_claims").delete().eq("user_id", userId);
+  if (selectionClaimsError) throw selectionClaimsError;
+
   // answer_events MUST be deleted before learning_engine_selection_traces
   // (Phase 8): a v1 answer_events row's selection_trace_id references a
   // trace with ON DELETE RESTRICT, so deleting the trace first while an
@@ -104,6 +112,11 @@ async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string): Pr
 
   const { error: progressError } = await admin.from("user_card_progress").delete().eq("user_id", userId);
   if (progressError) throw progressError;
+
+  // user_deck_learning_state (Runtime Cutover RC-B) references decks with
+  // ON DELETE RESTRICT, so it must go before the decks delete below.
+  const { error: deckLearningStateError } = await admin.from("user_deck_learning_state").delete().eq("user_id", userId);
+  if (deckLearningStateError) throw deckLearningStateError;
 
   const { data: decks, error: decksError } = await admin
     .from("decks")
