@@ -7,7 +7,7 @@ import { loadE2eEnv } from "./tests/e2e/env";
 const e2eEnv = loadE2eEnv();
 
 const PORT = 3100;
-const baseURL = `http://127.0.0.1:${PORT}`;
+const baseURL = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "./tests/e2e/specs",
