@@ -37,96 +37,23 @@
  * selection_claims, or user_card_progress.last_presented_scheduler_position
  * -- those are live-runtime concerns for RC-B/RC-C/RC-D, out of RC-A's
  * normalization scope.
+ *
+ * The read + per-card target computation this script performs (grouping
+ * by deck, assigning FORGOTTEN ordinals, deriving a deterministic seed,
+ * calling computeNormalizedCardProgress()) now lives in
+ * lib/learning-engine/cutover/prepare-normalization.ts, shared with the
+ * pre-RC-E atomic per-user enrollment path
+ * (lib/learning-engine/cutover/enroll.ts) so both compute IDENTICAL
+ * targets from IDENTICAL rows -- this script's own behavior/output
+ * (NormalizationSummary) is unchanged by that extraction.
  */
 
-import { getServiceRoleClient } from "@/lib/supabase/service-role";
 import {
-  assignForgottenOrdinals,
-  computeNormalizedCardProgress,
-  type LegacyCardStatus,
-} from "@/lib/learning-engine/cutover/normalize-legacy-state";
-import { createDeterministicRandom, buildNormalizationSeed } from "@/lib/learning-engine/cutover/deterministic-random";
+  computeNormalizationTargets,
+  readLegacyCardRowsForNormalization,
+  LEARNING_ENGINE_V1_CUTOVER_NORMALIZATION_VERSION,
+} from "@/lib/learning-engine/cutover/prepare-normalization";
 import { normalizeCardProgress, recomputeUserDeckLearningState } from "@/lib/learning-engine/cutover/dal";
-import { LEARNING_ENGINE_POLICY_VERSION } from "@/lib/learning-engine/config";
-
-/**
- * This script's own normalization-run version -- distinct from (but, by
- * convention, derived from) LEARNING_ENGINE_POLICY_VERSION. Bumping this
- * deliberately changes every FORGOTTEN card's deterministic seed (see
- * deterministic-random.ts's buildNormalizationSeed), which is the
- * documented escape hatch for a future corrective re-run that must
- * sample different repair targets on purpose -- never bumped casually.
- */
-const NORMALIZATION_VERSION = `${LEARNING_ENGINE_POLICY_VERSION}-cutover-rc-a.1`;
-
-const PAGE_SIZE = 1000;
-
-interface LegacyCardRow {
-  readonly user_id: string;
-  readonly card_id: string;
-  readonly card_status: LegacyCardStatus;
-  readonly deck_id: string;
-}
-
-/**
- * Reads every user_card_progress row paginated, joined to cards.deck_id,
- * optionally filtered to one user -- Runtime Cutover RC-D's
- * enrollUserInLearningEngineV1() (lib/learning-engine/cutover/enroll.ts)
- * reuses this exact function, scoped to the one user being enrolled,
- * rather than duplicating it. ACQUIRED rows (none should exist
- * pre-cutover) are rejected loudly rather than silently coerced -- this
- * script must never run against a deck that already has live v1-shaped
- * data.
- */
-async function readAllLegacyCardRows(
-  supabase: ReturnType<typeof getServiceRoleClient>,
-  userId?: string,
-): Promise<readonly LegacyCardRow[]> {
-  const rows: LegacyCardRow[] = [];
-  let from = 0;
-
-  for (;;) {
-    let query = supabase.from("user_card_progress").select("user_id, card_id, card_status, cards!inner(deck_id)");
-    if (userId !== undefined) {
-      query = query.eq("user_id", userId);
-    }
-    const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
-
-    if (error) {
-      throw new Error("learning-engine-v1-cutover-normalize: failed to read user_card_progress", { cause: error });
-    }
-    if (!data || data.length === 0) {
-      break;
-    }
-
-    for (const row of data as unknown as Array<{
-      user_id: string;
-      card_id: string;
-      card_status: string;
-      cards: { deck_id: string };
-    }>) {
-      if (row.card_status === "ACQUIRED") {
-        throw new Error(
-          `learning-engine-v1-cutover-normalize: card ${row.card_id} for user ${row.user_id} already has ` +
-            "card_status=ACQUIRED -- this script must only run against legacy (pre-cutover) data. Aborting.",
-        );
-      }
-      rows.push({
-        user_id: row.user_id,
-        card_id: row.card_id,
-        card_status: row.card_status as LegacyCardStatus,
-        deck_id: row.cards.deck_id,
-      });
-    }
-
-    if (data.length < PAGE_SIZE) {
-      break;
-    }
-    from += PAGE_SIZE;
-  }
-
-  return rows;
-}
 
 interface NormalizationSummary {
   readonly cardsNormalized: number;
@@ -135,80 +62,49 @@ interface NormalizationSummary {
 }
 
 /**
- * `userId`: Runtime Cutover RC-D addition. Omitted (the original RC-A
- * global cutover run) -- normalizes every (user, deck) pair with any
- * pre-existing legacy progress, exactly as before. Supplied -- scopes
- * the entire run to that one user's own (user, deck) pairs only, for
- * lib/learning-engine/cutover/enroll.ts's per-user enrollment flow.
- * Behavior and idempotency are otherwise identical either way.
+ * `userId`: omitted for the original RC-A global cutover run --
+ * normalizes every (user, deck) pair with any pre-existing legacy
+ * progress. Supplied to scope the entire run to that one user's own
+ * (user, deck) pairs only -- used by tests exercising this script
+ * directly; the live per-user enrollment path
+ * (lib/learning-engine/cutover/enroll.ts) no longer calls this function
+ * at all (pre-RC-E correction: it composes
+ * prepareLearningEngineV1NormalizationForUser() with the atomic
+ * commit_learning_engine_v1_enrollment() transaction instead, so that
+ * normalization and rollout admission commit together). Behavior and
+ * idempotency here are otherwise unchanged either way.
  */
 export async function runLearningEngineV1CutoverNormalization(options?: {
   readonly userId?: string;
 }): Promise<NormalizationSummary> {
-  const supabase = getServiceRoleClient();
-  const rows = await readAllLegacyCardRows(supabase, options?.userId);
+  const rows = await readLegacyCardRowsForNormalization(options?.userId);
+  const { cardsToNormalize, cardsSkippedNew, deckIdsByUser } = computeNormalizationTargets(
+    rows,
+    LEARNING_ENGINE_V1_CUTOVER_NORMALIZATION_VERSION,
+  );
 
-  // Group by deck so FORGOTTEN ordinals are assigned per-deck, and by
-  // (user, deck) so recomputeUserDeckLearningState() runs exactly once
-  // per pair, after every one of that pair's cards has been normalized.
-  const rowsByDeck = new Map<string, LegacyCardRow[]>();
-  for (const row of rows) {
-    const existing = rowsByDeck.get(row.deck_id);
-    if (existing) {
-      existing.push(row);
-    } else {
-      rowsByDeck.set(row.deck_id, [row]);
-    }
+  for (const card of cardsToNormalize) {
+    await normalizeCardProgress({
+      userId: card.userId,
+      cardId: card.cardId,
+      expectedLegacyCardStatus: card.expectedLegacyCardStatus,
+      target: card.target,
+      normalizationVersion: LEARNING_ENGINE_V1_CUTOVER_NORMALIZATION_VERSION,
+    });
   }
 
-  let cardsNormalized = 0;
-  let cardsSkippedNew = 0;
-  const recomputedPairs = new Set<string>();
-
-  for (const [deckId, deckRows] of rowsByDeck) {
-    const forgottenCardIds = deckRows.filter((row) => row.card_status === "FORGOTTEN").map((row) => row.card_id);
-    const ordinals = assignForgottenOrdinals(forgottenCardIds);
-
-    for (const row of deckRows) {
-      if (row.card_status === "NEW") {
-        cardsSkippedNew += 1;
-        continue;
-      }
-
-      const forgottenOrdinal = ordinals.get(row.card_id) ?? 0;
-      const seed = buildNormalizationSeed({
-        normalizationVersion: NORMALIZATION_VERSION,
-        deckId,
-        cardId: row.card_id,
-      });
-      const target = computeNormalizedCardProgress({
-        legacyCardStatus: row.card_status,
-        cardId: row.card_id,
-        forgottenOrdinal,
-        random: createDeterministicRandom(seed),
-      });
-
-      await normalizeCardProgress({
-        userId: row.user_id,
-        cardId: row.card_id,
-        expectedLegacyCardStatus: row.card_status,
-        target,
-        normalizationVersion: NORMALIZATION_VERSION,
-      });
-      cardsNormalized += 1;
-    }
-
-    const userIds = new Set(deckRows.map((row) => row.user_id));
-    for (const userId of userIds) {
+  let decksRecomputed = 0;
+  for (const [userId, deckIds] of deckIdsByUser) {
+    for (const deckId of deckIds) {
       await recomputeUserDeckLearningState(userId, deckId);
-      recomputedPairs.add(`${userId}:${deckId}`);
+      decksRecomputed += 1;
     }
   }
 
   return {
-    cardsNormalized,
+    cardsNormalized: cardsToNormalize.length,
     cardsSkippedNew,
-    decksRecomputed: recomputedPairs.size,
+    decksRecomputed,
   };
 }
 
