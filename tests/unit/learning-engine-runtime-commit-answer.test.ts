@@ -166,6 +166,18 @@ describe("commitLearningEngineAnswer", () => {
       session: { id: SESSION_ID },
       profile: { total_xp: 2 },
       deckState: { schedulerPosition: 11, schedulerRevision: 3 },
+      battle: {
+        damage: callInput.damage,
+        critical: callInput.critical,
+        comboAfter: callInput.comboAfter,
+        enemyHpAfter: callInput.enemyHpAfter,
+        enemyDefeated: callInput.enemyDefeated,
+        newEnemyType: callInput.newEnemyType,
+        newEnemyMaxHp: callInput.newEnemyMaxHp,
+        newEnemyHp: callInput.newEnemyHp,
+      },
+      // RAW_CONTEXT.card has fsrsState: null / poolStatus "ACTIVE" -- prepareLearningEngineAnswer never touches FSRS for this answer, so fsrsGrade (and therefore rating) is null.
+      rating: null,
     });
   });
 
@@ -238,9 +250,17 @@ describe("commitLearningEngineAnswer", () => {
     expect(callInput.cardAfter.fsrsTouched).toBe(false);
   });
 
-  it("a client_event_id replay short-circuits via the orchestration layer's own pre-check -- never reaches fetchAnswerContext/the commit RPC at all", async () => {
+  it("a client_event_id replay short-circuits via the orchestration layer's own pre-check -- never reaches fetchAnswerContext/the commit RPC at all, and returns the HISTORICAL persisted Battle result, never a placeholder", async () => {
     fetchExistingAnswerEvent.mockResolvedValue({
-      answerEvent: { id: "event-1", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1" },
+      answerEvent: {
+        id: "event-1", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1",
+        // Runtime Cutover RC-D battle-replay-fidelity correction: these
+        // four columns are what supabase/migrations/
+        // 20261018000000_learning_engine_v1_battle_replay_fidelity.sql
+        // now persists onto every fresh v1 answer_events row -- a
+        // genuine historical row always has them.
+        damage: 7, critical: true, combo: 4, enemy_hp_after: 13,
+      },
       xpEvents: [
         { id: "xp-1", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1", source_answer_event_id: "event-1", amount: 2, reason: "correct_answer", created_at: "2026-03-01T00:00:00.000Z" },
         { id: "xp-2", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1", source_answer_event_id: "event-1", amount: 15, reason: "card_learned", created_at: "2026-03-01T00:00:00.000Z" },
@@ -253,8 +273,59 @@ describe("commitLearningEngineAnswer", () => {
     expect(result.cardMasteredJustNow).toBe(true);
     expect(result.dailyGoalJustCompleted).toBe(false);
     expect(result.userCardProgress).toBeNull();
+    // Faithful, not a placeholder: read straight from the historical row,
+    // never recomputed and never zeroed.
+    expect(result.battle).toEqual({
+      damage: 7,
+      critical: true,
+      comboAfter: 4,
+      enemyHpAfter: 13,
+      enemyDefeated: false,
+      newEnemyType: null,
+      newEnemyMaxHp: null,
+      newEnemyHp: null,
+    });
+    expect(result.rating).toBeNull();
     expect(fetchAnswerContext).not.toHaveBeenCalled();
     expect(commitLearningEngineAnswerRpc).not.toHaveBeenCalled();
+  });
+
+  it("a replay never recomputes from current context, even when fetchAnswerContext is mocked to return a wildly different (diverged) state than the original answer", async () => {
+    fetchExistingAnswerEvent.mockResolvedValue({
+      answerEvent: { id: "event-1", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1", damage: 7, critical: true, combo: 4, enemy_hp_after: 13 },
+      xpEvents: [],
+    });
+    // If this were ever read, the result would be wrong -- proving the
+    // replay path genuinely never reaches fetchAnswerContext at all,
+    // not merely that it happens to return the same thing.
+    fetchAnswerContext.mockResolvedValue(RAW_CONTEXT);
+    commitLearningEngineAnswerRpc.mockResolvedValue(RPC_SUCCESS_RESULT);
+
+    const result = await commitLearningEngineAnswer(USER_ID, SESSION_ID, CLAIM_ID, ANSWER_INPUT, () => 0.5);
+
+    expect(result.battle).toEqual({
+      damage: 7,
+      critical: true,
+      comboAfter: 4,
+      enemyHpAfter: 13,
+      enemyDefeated: false,
+      newEnemyType: null,
+      newEnemyMaxHp: null,
+      newEnemyHp: null,
+    });
+    expect(fetchAnswerContext).not.toHaveBeenCalled();
+    expect(commitLearningEngineAnswerRpc).not.toHaveBeenCalled();
+  });
+
+  it("a replay of a row that predates the Battle-replay-fidelity migration (missing persisted columns) fails loudly rather than silently returning a fabricated value", async () => {
+    fetchExistingAnswerEvent.mockResolvedValue({
+      answerEvent: { id: "event-1", user_id: USER_ID, session_id: SESSION_ID, card_id: "card-1" },
+      xpEvents: [],
+    });
+
+    await expect(commitLearningEngineAnswer(USER_ID, SESSION_ID, CLAIM_ID, ANSWER_INPUT, () => 0.5)).rejects.toThrow(
+      /missing a persisted Battle column/,
+    );
   });
 
   it("a replayed client_event_id belonging to a different user/session is rejected, not treated as this caller's replay", async () => {

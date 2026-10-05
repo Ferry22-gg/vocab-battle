@@ -27,6 +27,13 @@ export interface SessionCardView {
   readonly enemyHp: number;
   readonly enemyMaxHp: number;
   readonly combo: number;
+  /**
+   * Runtime Cutover RC-D: the OPEN selection_claims id this card was
+   * claimed under, for a v1 session -- `null` for a legacy card. Carried
+   * back opaquely on the matching submitAnswer() call so the answer
+   * commits against the exact claim that produced this displayed card.
+   */
+  readonly claimId: string | null;
 }
 
 /**
@@ -66,6 +73,7 @@ export function toSessionCardUiState(result: NextSessionCard): SessionCardUiStat
           enemyHp: result.enemyHp,
           enemyMaxHp: result.enemyMaxHp,
           combo: result.combo,
+          claimId: result.claimId,
         },
       };
     case "no_card":

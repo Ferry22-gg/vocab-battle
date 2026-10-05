@@ -27,7 +27,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { EnemyId } from "@/lib/learning/config";
 
 const SESSION_COLUMNS =
-  "id, deck_id, status, current_mode, current_combo, current_enemy_type, current_enemy_hp, current_enemy_max_hp, learning_draw_index";
+  "id, deck_id, status, current_mode, current_combo, current_enemy_type, current_enemy_hp, current_enemy_max_hp, learning_draw_index, engine_version";
 
 /**
  * Narrow view of one `sessions` row -- only the columns the future
@@ -55,6 +55,15 @@ export interface SessionRow {
   current_enemy_hp: number | null;
   current_enemy_max_hp: number | null;
   learning_draw_index: number;
+  /**
+   * Runtime Cutover RC-D: the pinned-at-creation engine this session
+   * runs on (supabase/migrations/20261007000000_learning_engine_v1_runtime_cutover_schema.sql,
+   * 20261017000000_learning_engine_v1_runtime_cutover_rc_d.sql). The sole
+   * runtime source of truth for routing this session's next-card/answer
+   * calls -- never re-derived from learning_engine_v1_rollout once a
+   * session exists.
+   */
+  engine_version: "legacy" | "v1";
 }
 
 /**
@@ -164,6 +173,36 @@ export async function getActiveSessionForCurrentUser(): Promise<Pick<SessionRow,
   return data as Pick<SessionRow, "id"> | null;
 }
 
+/**
+ * Runtime Cutover RC-D: reads one session's engine_version, scoped
+ * entirely by RLS (sessions_select_own_or_admin) -- NO `status = 'active'`
+ * filter, unlike getActiveSessionById(). This is deliberate: an answer
+ * replay (lib/learning/engine-router.ts) must be able to determine which
+ * engine originally processed a client_event_id even after the session
+ * has since been explicitly finished (lib/learning/submit-answer.ts's own
+ * documented contract: "the session is not required to still be active"
+ * for a replay) -- engine_version itself is immutable after creation
+ * (RC-A/RC-D), so reading it never needs the active-only guarantee
+ * getActiveSessionById() exists for. Returns `null` for a session that
+ * does not exist or is not visible to the caller under RLS -- both
+ * collapse to the same result, never distinguishable, matching every
+ * other function in this module.
+ */
+export async function getSessionEngineVersion(sessionId: string): Promise<"legacy" | "v1" | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("engine_version")
+    .eq("id", sessionId)
+    .maybeSingle<{ engine_version: "legacy" | "v1" }>();
+
+  if (error) {
+    throw new Error("Failed to load session engine version", { cause: error });
+  }
+
+  return data?.engine_version ?? null;
+}
+
 // =============================================================================
 // getNextSessionCard() -- Phase F0 (docs/DATABASE_SCHEMA.md 4.4/4.6/4.7/9.1/
 // 10.3/11)
@@ -185,6 +224,19 @@ export type NextSessionCardNoCardReason = (typeof NO_CARD_REASONS)[number];
 export type NextSessionCardErrorReason = (typeof ERROR_REASONS)[number];
 
 /**
+ * Runtime Cutover RC-D: the v1-only counterparts of the two reason unions
+ * above, produced exclusively by lib/learning/engine-router.ts's
+ * getNextSessionCardForEngine() (never by parseNextSessionCard() below,
+ * which only ever parses the legacy get_next_session_card() RPC's raw
+ * result) -- kept as a separate, explicitly-named union rather than
+ * folded into NO_CARD_REASONS/ERROR_REASONS so parseNextSessionCard()'s
+ * own validation of the legacy RPC's result shape is untouched by this
+ * addition.
+ */
+export type NextSessionCardV1NoCardReason = "LEARNING_ENGINE_V1_NO_CARD";
+export type NextSessionCardV1ErrorReason = "LEARNING_ENGINE_V1_CLAIM_INVALID";
+
+/**
  * The full result contract of `get_next_session_card()`
  * (supabase/migrations/20260924010000_get_next_session_card.sql). Every
  * variant is a normal, expected outcome the Session UI must handle -- none
@@ -203,10 +255,20 @@ export type NextSessionCard =
       readonly enemyHp: number;
       readonly enemyMaxHp: number;
       readonly combo: number;
+      /**
+       * Runtime Cutover RC-D: the OPEN selection_claims id this card was
+       * claimed under, for a v1 session -- `null` for a legacy card. The
+       * UI must carry this back opaquely on the matching answer
+       * submission (lib/learning/submit-answer.ts's `claimId` field) so
+       * the answer commits against the exact claim that produced this
+       * displayed card, never "whichever card is currently next in the
+       * DB" (RC-D section 14).
+       */
+      readonly claimId: string | null;
     }
   | { readonly status: "not_found" }
-  | { readonly status: "no_card"; readonly reason: NextSessionCardNoCardReason }
-  | { readonly status: "error"; readonly reason: NextSessionCardErrorReason };
+  | { readonly status: "no_card"; readonly reason: NextSessionCardNoCardReason | NextSessionCardV1NoCardReason }
+  | { readonly status: "error"; readonly reason: NextSessionCardErrorReason | NextSessionCardV1ErrorReason };
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -288,6 +350,8 @@ function parseNextSessionCard(data: unknown): NextSessionCard {
     enemyHp: row.enemy_hp,
     enemyMaxHp: row.enemy_max_hp,
     combo: row.combo,
+    // The legacy RPC has no concept of a selection claim.
+    claimId: null,
   };
 }
 

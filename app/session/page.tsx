@@ -1,5 +1,6 @@
 import { requireOnboardedTester } from "@/lib/auth/dal";
-import { startOrResumeSession, getNextSessionCard } from "@/lib/sessions/dal";
+import { startOrResumeSession } from "@/lib/sessions/dal";
+import { getNextSessionCardForEngine } from "@/lib/learning/engine-router";
 import { SessionScreen } from "./session-screen";
 
 /**
@@ -22,10 +23,10 @@ import { SessionScreen } from "./session-screen";
  * duplicating that handling here.
  */
 export default async function SessionPage() {
-  await requireOnboardedTester();
+  const tester = await requireOnboardedTester();
 
   const session = await startOrResumeSession();
-  const initialCard = await getNextSessionCard(session.id);
+  const initialCard = await getNextSessionCardForEngine(tester.id, session.id);
 
   return <SessionScreen sessionId={session.id} initialCard={initialCard} />;
 }

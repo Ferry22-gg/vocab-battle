@@ -50,6 +50,8 @@ export const RC_C_ANSWER_TESTER_A = tester("920"); // Learning Engine v1 Runtime
 export const RC_C_ANSWER_TESTER_B = tester("921"); // Learning Engine v1 Runtime Cutover RC-C: concurrent claim/answer convergence
 export const RC_C_ANSWER_TESTER_C = tester("922"); // Learning Engine v1 Runtime Cutover RC-C: rollout-invariant rejection (deliberately never enrolled)
 export const RC_C_ANSWER_TESTER_D = tester("923"); // Learning Engine v1 Runtime Cutover RC-C: full account deletion of a one-way-zone user
+export const RC_D_V1_ROUTING_TESTER = tester("924"); // Learning Engine v1 Runtime Cutover RC-D: enrolled user, full live v1 routing flow
+export const RC_D_LEGACY_ROUTING_TESTER = tester("925"); // Learning Engine v1 Runtime Cutover RC-D: never-enrolled user, legacy routing stays unchanged
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -75,6 +77,8 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   RC_C_ANSWER_TESTER_B,
   RC_C_ANSWER_TESTER_C,
   RC_C_ANSWER_TESTER_D,
+  RC_D_V1_ROUTING_TESTER,
+  RC_D_LEGACY_ROUTING_TESTER,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;

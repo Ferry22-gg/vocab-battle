@@ -68,18 +68,29 @@ interface LegacyCardRow {
   readonly deck_id: string;
 }
 
-/** Reads every user_card_progress row paginated, joined to cards.deck_id. ACQUIRED rows (none should exist pre-cutover) are rejected loudly rather than silently coerced -- this script must never run against a deck that already has live v1-shaped data. */
+/**
+ * Reads every user_card_progress row paginated, joined to cards.deck_id,
+ * optionally filtered to one user -- Runtime Cutover RC-D's
+ * enrollUserInLearningEngineV1() (lib/learning-engine/cutover/enroll.ts)
+ * reuses this exact function, scoped to the one user being enrolled,
+ * rather than duplicating it. ACQUIRED rows (none should exist
+ * pre-cutover) are rejected loudly rather than silently coerced -- this
+ * script must never run against a deck that already has live v1-shaped
+ * data.
+ */
 async function readAllLegacyCardRows(
   supabase: ReturnType<typeof getServiceRoleClient>,
+  userId?: string,
 ): Promise<readonly LegacyCardRow[]> {
   const rows: LegacyCardRow[] = [];
   let from = 0;
 
   for (;;) {
-    const { data, error } = await supabase
-      .from("user_card_progress")
-      .select("user_id, card_id, card_status, cards!inner(deck_id)")
-      .range(from, from + PAGE_SIZE - 1);
+    let query = supabase.from("user_card_progress").select("user_id, card_id, card_status, cards!inner(deck_id)");
+    if (userId !== undefined) {
+      query = query.eq("user_id", userId);
+    }
+    const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
 
     if (error) {
       throw new Error("learning-engine-v1-cutover-normalize: failed to read user_card_progress", { cause: error });
@@ -123,9 +134,19 @@ interface NormalizationSummary {
   readonly decksRecomputed: number;
 }
 
-export async function runLearningEngineV1CutoverNormalization(): Promise<NormalizationSummary> {
+/**
+ * `userId`: Runtime Cutover RC-D addition. Omitted (the original RC-A
+ * global cutover run) -- normalizes every (user, deck) pair with any
+ * pre-existing legacy progress, exactly as before. Supplied -- scopes
+ * the entire run to that one user's own (user, deck) pairs only, for
+ * lib/learning-engine/cutover/enroll.ts's per-user enrollment flow.
+ * Behavior and idempotency are otherwise identical either way.
+ */
+export async function runLearningEngineV1CutoverNormalization(options?: {
+  readonly userId?: string;
+}): Promise<NormalizationSummary> {
   const supabase = getServiceRoleClient();
-  const rows = await readAllLegacyCardRows(supabase);
+  const rows = await readAllLegacyCardRows(supabase, options?.userId);
 
   // Group by deck so FORGOTTEN ordinals are assigned per-deck, and by
   // (user, deck) so recomputeUserDeckLearningState() runs exactly once

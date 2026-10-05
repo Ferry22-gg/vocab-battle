@@ -47,11 +47,13 @@ import {
   LearningEngineAnswerCommitError,
   STALE_ANSWER_SNAPSHOT_SQLSTATE,
   type CommittedXpEventRow,
+  type ExistingAnswerEventRow,
 } from "@/lib/learning-engine/runtime/commit-answer-dal";
 import { productionRandomSource } from "@/lib/learning-engine/runtime/random-source";
 import { buildReviewEvent } from "@/lib/learning-engine/telemetry/review-event";
 import type { ReviewEventPersistencePayload } from "@/lib/learning-engine/telemetry/review-event";
 import { deriveRetrievability } from "@/lib/learning-engine/fsrs/adapter";
+import { fsrsGradeToRatingText } from "@/lib/learning/commit-answer";
 import { LEARNING_ENGINE_FSRS_VERSION } from "@/lib/learning-engine/config";
 import type { LearningEngineCardState } from "@/lib/learning-engine/state";
 import type { RepairObligation } from "@/lib/learning-engine/repair-scheduler";
@@ -70,6 +72,54 @@ export interface SubmitLearningEngineAnswerInput {
   readonly timeToFirstActionMs: number | null;
 }
 
+/**
+ * Runtime Cutover RC-D correction: the faithful Battle Engine result,
+ * present on BOTH a fresh commit and a genuine replay -- never `null`.
+ *
+ * Fresh: sourced from this module's own pre-commit `prepared.battle`
+ * (the exact values commit_learning_engine_v1_answer() independently
+ * re-validated for structural consistency -- combo progression,
+ * enemy-HP arithmetic, next-enemy fields on defeat -- before accepting
+ * and persisting them).
+ *
+ * Replay: sourced from the HISTORICAL persisted `answer_events` row
+ * (lib/learning-engine/runtime/commit-answer-dal.ts's
+ * fetchExistingAnswerEvent()) -- never recomputed, never re-derived from
+ * current session/card state. This is safe even when later answers have
+ * since changed the session/deck's current Battle/scheduler state,
+ * because it reads this ONE historical row by its own id, not anything
+ * "current" (supabase/migrations/20261018000000_learning_engine_v1_battle_replay_fidelity.sql
+ * persists base_damage/speed_bonus/critical/combo/damage/enemy_hp_before/
+ * enemy_hp_after onto that exact row at commit time, fixing the gap
+ * where commit_learning_engine_v1_answer() received these values as
+ * parameters and re-validated them, but never wrote them --
+ * insert_learning_engine_review_event() deliberately never names them at
+ * all, see that function's own "Battle Engine concepts, not named by
+ * this function at all" header comment).
+ *
+ * `newEnemyType`/`newEnemyMaxHp`/`newEnemyHp` remain `null` on replay --
+ * NOT a residual gap, this mirrors legacy's own long-established replay
+ * contract exactly (lib/learning/submit-answer.ts's
+ * `SubmitAnswerReplaySuccess`: "new-enemy ... fields are NOT
+ * reconstructable and are deliberately absent"). The new-enemy fields
+ * are a `session`-row-derived, not an `answer_events`-row-derived,
+ * concept for EITHER engine, and `session` is `null` on every replay by
+ * design (RC-C's own replay branch never re-reads it).
+ *
+ * `correct` is deliberately NOT included here: the caller already has
+ * it from its own input, on both fresh and replay.
+ */
+export interface CommitLearningEngineAnswerBattleResult {
+  readonly damage: number;
+  readonly critical: boolean;
+  readonly comboAfter: number;
+  readonly enemyHpAfter: number;
+  readonly enemyDefeated: boolean;
+  readonly newEnemyType: string | null;
+  readonly newEnemyMaxHp: number | null;
+  readonly newEnemyHp: number | null;
+}
+
 export interface CommitLearningEngineAnswerResult {
   readonly isReplay: boolean;
   readonly cardMasteredJustNow: boolean;
@@ -81,6 +131,21 @@ export interface CommitLearningEngineAnswerResult {
   readonly session: Record<string, unknown> | null;
   readonly profile: Record<string, unknown> | null;
   readonly deckState: Record<string, unknown> | null;
+  readonly battle: CommitLearningEngineAnswerBattleResult;
+  /**
+   * Runtime Cutover RC-D addition: the categorical rating for a FRESH
+   * commit -- `null` on replay (unreconstructable, same RC-C gap as
+   * `battle` above -- answer_events.fsrs_rating is never populated for a
+   * v1 row either) AND `null` for a fresh commit whose card never
+   * touched FSRS at all (prepareLearningEngineAnswer's `fsrsGrade` is
+   * `null` for any answer that isn't an OUTSIDE-pool review -- the v1
+   * Active Pool/repair mechanisms do not use an FSRS grade concept per
+   * answer the way legacy's Review mode always does). Converted via
+   * lib/learning/commit-answer.ts's fsrsGradeToRatingText -- not a
+   * second inference, purely re-encoding the same decision
+   * prepareLearningEngineAnswer already made.
+   */
+  readonly rating: "Again" | "Hard" | "Good" | "Easy" | null;
 }
 
 export class CommitRetryExhaustedError extends Error {
@@ -92,6 +157,46 @@ export class CommitRetryExhaustedError extends Error {
 
 function isStaleSnapshotError(err: unknown): boolean {
   return err instanceof LearningEngineAnswerCommitError && err.code === STALE_ANSWER_SNAPSHOT_SQLSTATE;
+}
+
+/**
+ * Runtime Cutover RC-D correction: reconstructs the faithful Battle
+ * result for a replay from the HISTORICAL answer_events row -- never
+ * from current session/card state, and never recomputed. Throws rather
+ * than silently substituting a fabricated number if the persisted
+ * columns are ever missing/malformed (same "loud rejection, never
+ * silent repair" discipline this codebase's other mappers use) --
+ * matches this project's "no placeholders" rule exactly as strictly as
+ * the FRESH path's own validation does.
+ *
+ * `newEnemyType`/`newEnemyMaxHp`/`newEnemyHp` are always `null` here --
+ * not a gap, see CommitLearningEngineAnswerBattleResult's own doc
+ * comment (this mirrors legacy's own long-established replay contract).
+ */
+function battleResultFromHistoricalAnswerEvent(row: ExistingAnswerEventRow): CommitLearningEngineAnswerBattleResult {
+  const damage = row.damage;
+  const critical = row.critical;
+  const comboAfter = row.combo;
+  const enemyHpAfter = row.enemy_hp_after;
+
+  if (typeof damage !== "number" || typeof critical !== "boolean" || typeof comboAfter !== "number" || typeof enemyHpAfter !== "number") {
+    throw new Error(
+      "battleResultFromHistoricalAnswerEvent: the historical answer_events row is missing a persisted Battle column " +
+        `(damage=${String(damage)}, critical=${String(critical)}, combo=${String(comboAfter)}, enemy_hp_after=${String(enemyHpAfter)}) -- ` +
+        "this row predates 20261018000000_learning_engine_v1_battle_replay_fidelity.sql and cannot be replayed faithfully.",
+    );
+  }
+
+  return {
+    damage,
+    critical,
+    comboAfter,
+    enemyHpAfter,
+    enemyDefeated: enemyHpAfter === 0,
+    newEnemyType: null,
+    newEnemyMaxHp: null,
+    newEnemyHp: null,
+  };
 }
 
 function cardStateFromContext(card: AnswerContextCard): LearningEngineCardState {
@@ -335,6 +440,12 @@ export async function commitLearningEngineAnswer(
       session: null,
       profile: null,
       deckState: null,
+      battle: battleResultFromHistoricalAnswerEvent(existing.answerEvent),
+      // rating remains unreconstructable on replay (orthogonal to this
+      // correction -- answer_events.fsrs_rating is never populated for a
+      // v1 row at all, fresh or replayed; out of RC-D's Battle-fidelity
+      // scope).
+      rating: null,
     };
   }
 
@@ -406,6 +517,17 @@ export async function commitLearningEngineAnswer(
         session: result.session,
         profile: result.profile,
         deckState: result.deck_state,
+        battle: {
+          damage: prepared.battle.damage,
+          critical: prepared.battle.critical,
+          comboAfter: prepared.battle.comboAfter,
+          enemyHpAfter: prepared.battle.enemyHpAfter,
+          enemyDefeated: prepared.battle.enemyDefeated,
+          newEnemyType: prepared.battle.newEnemyType,
+          newEnemyMaxHp: prepared.battle.newEnemyMaxHp,
+          newEnemyHp: prepared.battle.newEnemyHp,
+        },
+        rating: prepared.fsrsGrade === null ? null : fsrsGradeToRatingText(prepared.fsrsGrade),
       };
     } catch (err) {
       if (isStaleSnapshotError(err)) {

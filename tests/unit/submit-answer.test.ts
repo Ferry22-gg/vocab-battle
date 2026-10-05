@@ -51,6 +51,7 @@ const SESSION: SessionRow = {
   current_enemy_hp: 50,
   current_enemy_max_hp: 90,
   learning_draw_index: 5,
+  engine_version: "legacy",
 };
 
 const PROGRESS: CardProgressRow = {
@@ -514,6 +515,8 @@ describe("runSubmitAnswer: fresh success", () => {
       dailyGoalJustCompleted: false,
       xpEvents: [{ reason: "correct_answer", amount: 2 }],
       totalXpAwarded: 2,
+      cardMasteredJustNow: false,
+      fullMasteryJustAchieved: null,
       newEnemyType: null,
       newEnemyMaxHp: null,
       newEnemyHp: null,
@@ -580,6 +583,8 @@ describe("runSubmitAnswer: replay", () => {
       dailyGoalJustCompleted: false,
       xpEvents: [{ reason: "correct_answer", amount: 2 }],
       totalXpAwarded: 2,
+      cardMasteredJustNow: false,
+      fullMasteryJustAchieved: null,
     });
     expect(result.data).not.toHaveProperty("newEnemyType");
     expect(result.data).not.toHaveProperty("totalXp");
@@ -687,6 +692,8 @@ describe("runSubmitAnswer: early replay lookup (D3b)", () => {
         { reason: "daily_goal_completed", amount: 30 },
       ],
       totalXpAwarded: 32,
+      cardMasteredJustNow: false,
+      fullMasteryJustAchieved: null,
     });
   });
 

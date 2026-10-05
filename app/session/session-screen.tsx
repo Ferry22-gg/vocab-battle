@@ -51,6 +51,8 @@ interface PendingSubmission {
   readonly cardId: string;
   readonly correct: boolean;
   readonly responseTimeMs: number;
+  /** Runtime Cutover RC-D: the displayed card's claim id (null for legacy), carried through unchanged across a retry of the same logical attempt. */
+  readonly claimId: string | null;
 }
 
 /** How long each transient battle-feedback element stays on screen before it's removed -- matched 1:1 to that element's own CSS animation duration in battle-scene.tsx so removal never clips the animation. */
@@ -164,7 +166,7 @@ export function SessionScreen({
       pendingSubmission.cardId === card.cardId &&
       pendingSubmission.correct === correct
         ? pendingSubmission
-        : { clientEventId: crypto.randomUUID(), cardId: card.cardId, correct, responseTimeMs };
+        : { clientEventId: crypto.randomUUID(), cardId: card.cardId, correct, responseTimeMs, claimId: card.claimId };
 
     dispatchGuard({ type: "GRADE_SUBMIT" });
     setPendingSubmission(submission);
@@ -179,6 +181,7 @@ export function SessionScreen({
       cardId: submission.cardId,
       correct: submission.correct,
       responseTimeMs: submission.responseTimeMs,
+      claimId: submission.claimId,
     });
 
     if (!mountedRef.current) return;

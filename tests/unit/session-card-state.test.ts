@@ -17,6 +17,7 @@ describe("toSessionCardUiState", () => {
       enemyHp: 50,
       enemyMaxHp: 110,
       combo: 3,
+      claimId: null,
     };
 
     expect(toSessionCardUiState(result)).toEqual({
@@ -31,6 +32,7 @@ describe("toSessionCardUiState", () => {
         enemyHp: 50,
         enemyMaxHp: 110,
         combo: 3,
+        claimId: null,
       },
     });
   });

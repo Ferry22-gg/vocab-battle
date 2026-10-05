@@ -27,6 +27,7 @@ import type { NormalizedCardProgressTarget, LegacyCardStatus } from "@/lib/learn
 
 const NORMALIZE_CARD_PROGRESS_RPC = "normalize_card_progress_for_learning_engine_v1";
 const RECOMPUTE_DECK_STATE_RPC = "recompute_user_deck_learning_state_for_v1";
+const ADMIT_USER_RPC = "admit_user_to_learning_engine_v1";
 
 /** Preserves the Postgres SQLSTATE as a first-class field, same pattern as every other trusted DAL error class in this codebase (lib/learning/commit-answer.ts's CommitAnswerTransactionError, lib/learning-engine/telemetry/dal.ts's LearningEngineTelemetryError). */
 export class LearningEngineCutoverError extends Error {
@@ -130,4 +131,36 @@ export async function recomputeUserDeckLearningState(
   }
 
   return data as RecomputedDeckStateRow;
+}
+
+/** One-to-one with learning_engine_v1_rollout's own columns. */
+export interface LearningEngineV1RolloutRow {
+  readonly user_id: string;
+  readonly enabled_at: string;
+  readonly first_v1_answer_at: string | null;
+}
+
+/**
+ * Runtime Cutover RC-D: calls `admit_user_to_learning_engine_v1` -- the
+ * minimal trusted, service_role-only rollout-admission primitive
+ * (supabase/migrations/20261017000000_learning_engine_v1_runtime_cutover_rc_d.sql).
+ * Write-only; performs no normalization itself. Callers MUST complete
+ * per-deck normalization (normalizeCardProgress()/recomputeUserDeckLearningState()
+ * above) for this user FIRST -- see lib/learning-engine/cutover/enroll.ts,
+ * the only intended caller. Idempotent: admitting an already-admitted
+ * user is a safe no-op.
+ */
+export async function admitUserToLearningEngineV1(userId: string): Promise<LearningEngineV1RolloutRow> {
+  const supabase = getServiceRoleClient();
+
+  const { data, error } = await supabase.rpc(ADMIT_USER_RPC, { p_user_id: userId });
+
+  if (error) {
+    throw new LearningEngineCutoverError(`${ADMIT_USER_RPC} RPC call failed`, {
+      code: error.code,
+      cause: error,
+    });
+  }
+
+  return data as LearningEngineV1RolloutRow;
 }

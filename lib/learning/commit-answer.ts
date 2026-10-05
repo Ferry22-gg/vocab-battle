@@ -144,7 +144,8 @@ export interface CommitAnswerInput {
  * excludes it at every normal call site (same defense-in-depth pattern as
  * lib/learning/fsrs.ts's advanceFsrs).
  */
-function fsrsGradeToRatingText(grade: Grade): "Again" | "Hard" | "Good" | "Easy" {
+/** Exported for lib/learning/engine-router.ts's v1 adapter (Runtime Cutover RC-D), which needs the identical Grade -> rating-text conversion for a v1 answer's prepareLearningEngineAnswer()-estimated fsrsGrade. */
+export function fsrsGradeToRatingText(grade: Grade): "Again" | "Hard" | "Good" | "Easy" {
   if ((grade as Rating) === Rating.Manual) {
     throw new Error("commitAnswerTransaction: Manual is not a valid fsrsRating");
   }

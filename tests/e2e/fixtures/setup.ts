@@ -103,10 +103,68 @@ export async function setupE2eFixtures(): Promise<void> {
   await ensureNoProfile(admin, missingProfileUserId);
 }
 
+/**
+ * Runtime Cutover RC-D addition: full teardown now also owns every
+ * Learning Engine v1 trusted-state table a browser-smoke-tested v1
+ * tester (RC_D_V1_SMOKE_TESTER) can leave behind -- selection_claims,
+ * answer_events/learning_engine_selection_traces, xp_events,
+ * daily_user_stats, sessions, user_deck_learning_state, and the
+ * learning_engine_v1_rollout row itself. Mirrors
+ * tests/integration/fixtures/setup.ts's deleteOwnedLearnerData() (same
+ * FK-RESTRICT-respecting order, same "fullAccountDeletion" RPC for the
+ * one-way-guarded rollout row) rather than re-deriving it -- this is a
+ * genuine account teardown (the auth user is deleted right after this
+ * returns), so the account-deletion bypass is always the correct choice
+ * here, unconditionally. A no-op for every OTHER existing E2E fixture,
+ * which has none of these rows.
+ */
 async function deleteOwnedDeckData(
   admin: SupabaseClient,
   userId: string
 ): Promise<void> {
+  const { error: rolloutError } = await admin.rpc(
+    "delete_learning_engine_v1_rollout_for_account_deletion",
+    { p_user_id: userId }
+  );
+  if (rolloutError) throw rolloutError;
+
+  const { error: selectionClaimsError } = await admin
+    .from("selection_claims")
+    .delete()
+    .eq("user_id", userId);
+  if (selectionClaimsError) throw selectionClaimsError;
+
+  const { error: answerEventsError } = await admin
+    .from("answer_events")
+    .delete()
+    .eq("user_id", userId);
+  if (answerEventsError) throw answerEventsError;
+
+  const { error: selectionTracesError } = await admin
+    .from("learning_engine_selection_traces")
+    .delete()
+    .eq("user_id", userId);
+  if (selectionTracesError) throw selectionTracesError;
+
+  const { error: xpEventsError } = await admin
+    .from("xp_events")
+    .delete()
+    .eq("user_id", userId);
+  if (xpEventsError) throw xpEventsError;
+
+  const { error: dailyStatsError } = await admin
+    .from("daily_user_stats")
+    .delete()
+    .eq("user_id", userId);
+  if (dailyStatsError) throw dailyStatsError;
+
+  // session_review_cards/session_learning_queue CASCADE from sessions.
+  const { error: sessionsError } = await admin
+    .from("sessions")
+    .delete()
+    .eq("user_id", userId);
+  if (sessionsError) throw sessionsError;
+
   const { data: decks, error: decksError } = await admin
     .from("decks")
     .select("id")
@@ -120,6 +178,12 @@ async function deleteOwnedDeckData(
     .delete()
     .eq("user_id", userId);
   if (progressError) throw progressError;
+
+  const { error: deckLearningStateError } = await admin
+    .from("user_deck_learning_state")
+    .delete()
+    .eq("user_id", userId);
+  if (deckLearningStateError) throw deckLearningStateError;
 
   if (deckIds.length > 0) {
     const { error: cardsError } = await admin

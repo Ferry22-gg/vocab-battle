@@ -60,6 +60,16 @@ export const DISABLED_TESTER = tester("804", { accountStatus: "disabled" });
 // role = 'admin' (scenario F).
 export const ADMIN = tester("805", { role: "admin" });
 
+// Learning Engine v1 Runtime Cutover RC-D browser smoke test: enrolled in
+// the v1 rollout (by the test itself, via the real enrollment path,
+// AFTER onboarding creates their deck) -- drives the live v1 Session
+// routing flow through the actual UI.
+export const RC_D_V1_SMOKE_TESTER = tester("807");
+
+// RC-D browser smoke test: never enrolled -- proves the legacy flow is
+// completely unchanged.
+export const RC_D_LEGACY_SMOKE_TESTER = tester("808");
+
 // Auth user only -- deliberately no matching profiles row (scenario G).
 export const MISSING_PROFILE_USER = {
   publicUserId: "806",
@@ -73,6 +83,8 @@ export const PROFILE_FIXTURES: ProfileFixture[] = [
   DUPLICATE_NICKNAME_TESTER,
   DISABLED_TESTER,
   ADMIN,
+  RC_D_V1_SMOKE_TESTER,
+  RC_D_LEGACY_SMOKE_TESTER,
 ];
 
 export const ALL_E2E_PUBLIC_USER_IDS = [

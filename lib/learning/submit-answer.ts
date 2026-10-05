@@ -89,6 +89,20 @@ export interface SubmitAnswerInput {
   readonly cardId: string;
   readonly correct: boolean;
   readonly responseTimeMs: number;
+  /**
+   * Runtime Cutover RC-D: the OPEN selection_claims id the displayed card
+   * was claimed under, for a v1 session -- `null` for a legacy session
+   * (this field is meaningless there and is ignored by this module's own
+   * legacy flow below). The browser gets this opaquely from the matching
+   * card-fetch result (lib/sessions/dal.ts's NextSessionCard `claimId`)
+   * and must never be asked to construct or guess one -- see
+   * lib/learning/engine-router.ts, which routes a v1 session's answer to
+   * commitLearningEngineAnswer(claimId, ...) instead of this module.
+   * Optional (as opposed to required-but-nullable) so every existing
+   * legacy caller -- which has no concept of a claim at all -- is
+   * unaffected and need not be touched to keep compiling.
+   */
+  readonly claimId?: string | null;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -121,7 +135,14 @@ export interface SubmitAnswerXpEvent {
 }
 
 interface SubmitAnswerSharedFields {
-  readonly rating: "Again" | "Hard" | "Good" | "Easy";
+  /**
+   * Runtime Cutover RC-D: widened to admit `null` for a v1 answer whose
+   * card never touched FSRS at all (the v1 Active Pool/repair mechanisms
+   * have no per-answer FSRS grade concept the way legacy's Review mode
+   * always does -- only an OUTSIDE-pool review answer has one). Legacy
+   * always supplies a non-null value, unchanged.
+   */
+  readonly rating: "Again" | "Hard" | "Good" | "Easy" | null;
   readonly correct: boolean;
   readonly damage: number;
   readonly critical: boolean;
@@ -131,6 +152,25 @@ interface SubmitAnswerSharedFields {
   readonly dailyGoalJustCompleted: boolean;
   readonly xpEvents: readonly SubmitAnswerXpEvent[];
   readonly totalXpAwarded: number;
+  /**
+   * Runtime Cutover RC-D (spec section 24, "plumb only"): whether this
+   * answer transitioned the card ACQUIRED -> LEARNED (v1) or produced the
+   * equivalent legacy 'card_learned'/'card_relearned' xp_events reason.
+   * Not read by session-screen.tsx yet -- RC-E owns activating the
+   * mastery toast; this field only makes the information available to a
+   * future caller without a second round trip.
+   */
+  readonly cardMasteredJustNow: boolean;
+  /**
+   * Runtime Cutover RC-D (spec section 24): the authoritative v1
+   * has_achieved_full_mastery false -> true transition for this answer's
+   * deck. Always `null` for legacy -- commit_answer_transaction() never
+   * updates has_achieved_full_mastery live (docs/
+   * LEARNING_ENGINE_V1_RUNTIME_CUTOVER_TODO.md, "Stale
+   * user_deck_learning_state"), so legacy has no authoritative value to
+   * report here, and `null` (never fabricated `false`) says so honestly.
+   */
+  readonly fullMasteryJustAchieved: boolean | null;
 }
 
 /**
@@ -228,7 +268,8 @@ function invalidInput(message: string): SubmitAnswerError {
  * docs/DATABASE_SCHEMA.md 4.8) -- inventing one here would be exactly the
  * kind of unauthorized invariant this project's conventions avoid.
  */
-function validateInput(input: SubmitAnswerInput): SubmitAnswerError | null {
+/** Exported for lib/learning/engine-router.ts's v1 answer path (Runtime Cutover RC-D), which reuses this exact generic-shape validation before its own engine-specific claimId requirement check. */
+export function validateInput(input: SubmitAnswerInput): SubmitAnswerError | null {
   if (!isValidUuid(input.clientEventId)) {
     return invalidInput("clientEventId must be a valid UUID.");
   }
@@ -243,6 +284,9 @@ function validateInput(input: SubmitAnswerInput): SubmitAnswerError | null {
   }
   if (!Number.isInteger(input.responseTimeMs) || input.responseTimeMs < 0) {
     return invalidInput("responseTimeMs must be a non-negative integer.");
+  }
+  if (input.claimId != null && !isValidUuid(input.claimId)) {
+    return invalidInput("claimId must be a valid UUID, null, or omitted.");
   }
   return null;
 }
@@ -294,6 +338,9 @@ function shapeSuccess(result: CommitAnswerResult): SubmitAnswerSuccess {
     dailyGoalJustCompleted: daily_goal_just_completed,
     xpEvents: shapeXpEvents(xp_events),
     totalXpAwarded: xp_events.reduce((sum, event) => sum + event.amount, 0),
+    cardMasteredJustNow: xp_events.some((event) => event.reason === "card_learned" || event.reason === "card_relearned"),
+    // Legacy never computes an authoritative live has_achieved_full_mastery transition -- see SubmitAnswerSharedFields's own doc comment.
+    fullMasteryJustAchieved: null,
   };
 
   if (result.is_replay) {
