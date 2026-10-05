@@ -9,7 +9,10 @@ import {
   isRepairTargetReached,
   isSpacedConfirmationDue,
   resolveOrdinaryRepairCorrect,
+  resolveOrdinaryRepairWrong,
   resolveRelearningRepairCorrect,
+  resolveRelearningRepairWrong,
+  resolveSpacedConfirmationWrong,
   sampleRepairGap,
   selectRepairCandidate,
   type RepairObligation,
@@ -265,6 +268,178 @@ describe("resolveOrdinaryRepairCorrect (sections 12.3, 12.4)", () => {
       expect(isEligibleForNormalSelection(cooldownCard, p)).toBe(false);
     }
     expect(isEligibleForNormalSelection(cooldownCard, 56)).toBe(true);
+  });
+});
+
+// =============================================================================
+// RC-C spec-gap correction: Wrong during an already-pending repair/
+// spaced-confirmation retry (docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md
+// sections 12.2/13, now-normative).
+// =============================================================================
+
+describe("resolveOrdinaryRepairWrong (RC-C spec-gap correction, section 12.2)", () => {
+  it("items 1-3: FRESH/L1/L2 repair-retry Wrong -> stage unchanged, new obligation created", () => {
+    for (const stage of ["FRESH", "LEARNING_1", "LEARNING_2"] as const) {
+      const pending = { ...FRESH, learningStage: stage, repairPending: true };
+      const result = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 50, random: scriptedRandom([0]) });
+      expect(result.cardState.learningStage).toBe(stage);
+      expect(result.cardState.cardStatus).toBe("LEARNING");
+      expect(result.cardState.repairPending).toBe(true);
+    }
+  });
+
+  it("item 5: the new obligation's wrongPosition equals the current committed position", () => {
+    const pending = { ...FRESH, repairPending: true };
+    const result = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 77, random: scriptedRandom([0]) });
+    expect(result.repairObligation.wrongPosition).toBe(77);
+  });
+
+  it("item 6: target/hard-cap positions come from createRepairObligation, not a second formula", () => {
+    const pending = { ...FRESH, repairPending: true };
+    const viaResolve = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 77, random: scriptedRandom([0]) });
+    const viaDirect = createRepairObligation({ cardId: "card-1", wrongPosition: 77, random: scriptedRandom([0]) });
+    expect(viaResolve.repairObligation).toEqual(viaDirect);
+  });
+
+  it("item 4: the old obligation is replaced, not retained -- the caller persists only the returned obligation", () => {
+    const pending = { ...FRESH, repairPending: true };
+    const result = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 77, random: scriptedRandom([0]) });
+    // The resolution carries exactly one obligation (the fresh one) -- there
+    // is no field anywhere in RepairWrongResolution for a second, stale one.
+    expect(Object.keys(result)).toEqual(["cardState", "repairObligation"]);
+    expect(result.repairObligation.wrongPosition).toBe(77);
+  });
+
+  it("item 15: does not touch mastery counters", () => {
+    const pending = { ...FRESH, repairPending: true, fsrsReviewCorrectCount: 3, fsrsReviewCorrectStreak: 2 };
+    const result = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 50, random: scriptedRandom([0]) });
+    expect(result.cardState.fsrsReviewCorrectCount).toBe(3);
+    expect(result.cardState.fsrsReviewCorrectStreak).toBe(2);
+  });
+
+  it("item 16: repeated Repair Wrongs can restart repair multiple times without breaking invariants", () => {
+    let state = { ...FRESH, repairPending: true };
+    let position = 10;
+    for (let i = 0; i < 5; i += 1) {
+      const result = resolveOrdinaryRepairWrong({ cardState: state, cardId: "card-1", wrongPosition: position, random: scriptedRandom([i / 5]) });
+      expect(result.cardState.repairPending).toBe(true);
+      expect(result.repairObligation.wrongPosition).toBe(position);
+      expect(result.repairObligation.targetPosition).toBeGreaterThan(position);
+      expect(result.repairObligation.hardCapPosition).toBeGreaterThan(position);
+      state = result.cardState;
+      position += 10;
+    }
+  });
+
+  it("a later Repair Correct (against the fresh obligation) still follows the existing rules", () => {
+    const pending = { ...FRESH, learningStage: "LEARNING_1" as const, repairPending: true };
+    const wrongResult = resolveOrdinaryRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 50, random: scriptedRandom([0]) });
+    const correctResult = resolveOrdinaryRepairCorrect(wrongResult.cardState, 55);
+    expect(correctResult.cardState.learningStage).toBe("LEARNING_1"); // unchanged, section 12.3
+    expect(correctResult.cardState.repairPending).toBe(false);
+  });
+});
+
+describe("resolveRelearningRepairWrong (RC-C spec-gap correction, section 13)", () => {
+  it("item 7: FORGOTTEN + REPAIR_PENDING + Wrong remains FORGOTTEN/REPAIR_PENDING", () => {
+    const forgotten = applyLongTermWrong(acquired());
+    const pending = { ...forgotten, repairPending: true };
+    const result = resolveRelearningRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 100, random: scriptedRandom([0]) });
+    expect(result.cardState.cardStatus).toBe("FORGOTTEN");
+    expect(result.cardState.relearningPhase).toBe("REPAIR_PENDING");
+    expect(result.cardState.repairPending).toBe(true);
+  });
+
+  it("item 8: never advances to SPACED_CONFIRMATION_PENDING on a Wrong", () => {
+    const forgotten = applyLongTermWrong(acquired());
+    const pending = { ...forgotten, repairPending: true };
+    const result = resolveRelearningRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 100, random: scriptedRandom([0]) });
+    expect(result.cardState.relearningPhase).not.toBe("SPACED_CONFIRMATION_PENDING");
+  });
+
+  it("the fresh obligation is anchored at the current Wrong position", () => {
+    const forgotten = applyLongTermWrong(acquired());
+    const pending = { ...forgotten, repairPending: true };
+    const result = resolveRelearningRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 123, random: scriptedRandom([0]) });
+    expect(result.repairObligation.wrongPosition).toBe(123);
+  });
+
+  it("preserves hasEverBeenMastered and does not touch mastery counters (the original qualifying long-term Wrong already reset the streak)", () => {
+    const forgotten = applyLongTermWrong({ ...acquired(), cardStatus: "LEARNED", hasEverBeenMastered: true, fsrsReviewCorrectCount: 5 });
+    const pending = { ...forgotten, repairPending: true };
+    const result = resolveRelearningRepairWrong({ cardState: pending, cardId: "card-1", wrongPosition: 100, random: scriptedRandom([0]) });
+    expect(result.cardState.hasEverBeenMastered).toBe(true);
+    expect(result.cardState.fsrsReviewCorrectCount).toBe(5);
+    expect(result.cardState.fsrsReviewCorrectStreak).toBe(0);
+  });
+});
+
+/**
+ * A valid FORGOTTEN + SPACED_CONFIRMATION_PENDING fixture, reached via the
+ * real composition: a long-term Wrong, the orchestration-layer merge of
+ * repairPending:true + a created obligation, a Repair Correct, and finally
+ * merging resolveRelearningRepairCorrect's own clearedRepairFields (which
+ * applyRelearningRepairCorrect alone does not apply -- see that function's
+ * doc comment) to reach the valid repairPending:false precondition
+ * applySpacedConfirmationWrong requires.
+ */
+function makeSpacedConfirmationPending(baseAcquired: LearningEngineCardState, wrongPosition: number): LearningEngineCardState {
+  const forgotten = applyLongTermWrong(baseAcquired);
+  const pending = { ...forgotten, repairPending: true };
+  const repairResult = resolveRelearningRepairCorrect(pending, wrongPosition);
+  return { ...repairResult.cardState, ...repairResult.clearedRepairFields };
+}
+
+describe("resolveSpacedConfirmationWrong (RC-C spec-gap correction, section 13)", () => {
+  it("items 9-10: FORGOTTEN + SPACED_CONFIRMATION_PENDING + Wrong -> REPAIR_PENDING with a fresh complete obligation", () => {
+    const spacedPending = makeSpacedConfirmationPending(acquired(), 100);
+    expect(spacedPending.relearningPhase).toBe("SPACED_CONFIRMATION_PENDING");
+    expect(spacedPending.repairPending).toBe(false);
+
+    const result = resolveSpacedConfirmationWrong({ cardState: spacedPending, cardId: "card-1", wrongPosition: 106, random: scriptedRandom([0]) });
+    expect(result.cardState.cardStatus).toBe("FORGOTTEN");
+    expect(result.cardState.relearningPhase).toBe("REPAIR_PENDING");
+    expect(result.cardState.repairPending).toBe(true);
+    expect(result.repairObligation.wrongPosition).toBe(106);
+    expect(result.repairObligation.targetPosition).toBeGreaterThan(106);
+    expect(result.repairObligation.hardCapPosition).toBeGreaterThan(106);
+  });
+
+  it("item 11: a subsequent Repair Correct can re-enter SPACED_CONFIRMATION_PENDING", () => {
+    const spacedPending = makeSpacedConfirmationPending(acquired(), 100);
+    const wrongResult = resolveSpacedConfirmationWrong({ cardState: spacedPending, cardId: "card-1", wrongPosition: 106, random: scriptedRandom([0]) });
+
+    const correctResult = resolveRelearningRepairCorrect(wrongResult.cardState, 110);
+    expect(correctResult.cardState.relearningPhase).toBe("SPACED_CONFIRMATION_PENDING");
+    expect(correctResult.cardState.cardStatus).toBe("FORGOTTEN");
+  });
+
+  it("item 12: a subsequent Spaced Correct can still complete relearning (never-mastered -> ACQUIRED)", () => {
+    const spacedPending = makeSpacedConfirmationPending(acquired(), 100);
+    const wrongResult = resolveSpacedConfirmationWrong({ cardState: spacedPending, cardId: "card-1", wrongPosition: 106, random: scriptedRandom([0]) });
+    const correctResult = resolveRelearningRepairCorrect(wrongResult.cardState, 110);
+    const finalMerged = { ...correctResult.cardState, ...correctResult.clearedRepairFields };
+
+    const finalState = applySpacedCorrect(finalMerged);
+    expect(finalState.cardStatus).toBe("ACQUIRED");
+    expect(finalState.poolStatus).toBe("OUTSIDE");
+  });
+
+  it("item 12b: previously-mastered card restores to LEARNED via the same second attempt", () => {
+    const spacedPending = makeSpacedConfirmationPending({ ...acquired(), cardStatus: "LEARNED", hasEverBeenMastered: true }, 100);
+    const wrongResult = resolveSpacedConfirmationWrong({ cardState: spacedPending, cardId: "card-1", wrongPosition: 106, random: scriptedRandom([0]) });
+    const correctResult = resolveRelearningRepairCorrect(wrongResult.cardState, 110);
+    const finalMerged = { ...correctResult.cardState, ...correctResult.clearedRepairFields };
+
+    const finalState = applySpacedCorrect(finalMerged);
+    expect(finalState.cardStatus).toBe("LEARNED");
+  });
+
+  it("item 14: does not touch mastery counters", () => {
+    const spacedPending = makeSpacedConfirmationPending(acquired({ fsrsReviewCorrectCount: 2 }), 100);
+    const result = resolveSpacedConfirmationWrong({ cardState: spacedPending, cardId: "card-1", wrongPosition: 106, random: scriptedRandom([0]) });
+    expect(result.cardState.fsrsReviewCorrectCount).toBe(2);
+    expect(result.cardState.fsrsReviewCorrectStreak).toBe(0);
   });
 });
 

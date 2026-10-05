@@ -48,33 +48,41 @@
  * out to every call site.
  *
  * ---------------------------------------------------------------------
- * `cardsSinceLastSeen`: a reported gap, not an invented semantic (section
- * 12 of this phase's brief)
+ * `cardsSinceLastSeen`: RESOLVED (RC-C) -- closes the Runtime Cutover
+ * TODO's `cards_since_last_seen` gap. Two genuinely distinct positions,
+ * never conflated.
  * ---------------------------------------------------------------------
- * The brief requires: "Prefer: current scheduler position minus the
- * card's previous presentation scheduler position ONLY IF the required
- * authoritative previous position exists. If the repository still lacks
- * sufficient authoritative state to compute this field correctly: STOP
- * and report that exact gap before inventing semantics."
+ * `cardsSinceLastSeen` means: the number of committed Learning Engine
+ * questions presented strictly BETWEEN this card's previous presentation
+ * and its CURRENT one. If the previous presentation was at position P and
+ * this answer commits at position N (the locked pre-answer deck
+ * scheduler_position + 1 -- the position THIS committed answer itself
+ * occupies, matching every other "N intervening cards" rule in the spec,
+ * e.g. active-priority.ts's applyCorrectCooldown): `max(0, N - P - 1)`.
  *
- * Audited directly: `user_card_progress` (supabase/migrations/
- * 20261001000000_learning_engine_v1_additive_schema.sql) has no column
- * recording "the deck-global scheduler_position at this card's last
- * presentation" -- `last_seen_at` is a timestamp (feeds
- * `secondsSinceLastSeen` below, which IS computable), and none of
- * `correct_cooldown_until_position`/`repair_wrong_position`/
- * `repair_target_position`/`repair_hard_cap_position`/
- * `active_draws_since_eligible` records that quantity either (they are
- * each a different, narrower position fact). This builder therefore
- * accepts `previousPresentationSchedulerPosition: number | null` as an
- * explicit input and computes `cardsSinceLastSeen` only when the caller
- * can actually supply it; every real caller today has no such column to
- * read, so it will pass `null` and this field will be `null` on every
- * real v1 event until a future phase adds that storage. This is reported
- * explicitly in the Phase 8 handoff report, not silently worked around
- * with a session-local approximation (which the brief explicitly
- * forbids: "Do not derive a misleading value from session-local indexes
- * if the scheduler position is deck-global").
+ * `N` here is deliberately NOT the same value as `position.schedulerPosition`
+ * below (the PRE-answer SelectionTrace echo -- see ReviewEventPosition's
+ * own doc comment). Collapsing the two would either (a) undercount
+ * cardsSinceLastSeen by exactly one relative to every other position rule
+ * in the engine (the bug this fix closes -- confirmed by direct
+ * comparison against applyCorrectCooldown's own documented N+1..N+5
+ * boundary), or (b) require loosening `answer_events.scheduler_position`'s
+ * existing cross-check against its linked SelectionTrace, which remains
+ * untouched and must stay the selection-time value. This is why
+ * `cardsSinceLastSeen` draws its "current" operand from
+ * `exposure.currentPresentationSchedulerPosition` (the committed
+ * post-increment position, supplied by the caller -- this module has no
+ * clock/DB access, so it cannot compute `N` itself) rather than from
+ * `position.schedulerPosition` -- see `deriveCardsSinceLastSeen` below and
+ * `ReviewEventExposureContext`'s own doc comment for the full contract.
+ *
+ * `previousPresentationSchedulerPosition: number | null` remains the
+ * authoritative previous value (from `user_card_progress.
+ * last_presented_scheduler_position`, read BEFORE this answer overwrites
+ * it with `N`); `null` means no prior v1 presentation exists, and this
+ * field stays `null` rather than inventing a session-local approximation
+ * ("Do not derive a misleading value from session-local indexes if the
+ * scheduler position is deck-global").
  */
 
 import { computeIntervalProgress } from "@/lib/learning-engine/fsrs/due-classification";
@@ -131,6 +139,13 @@ export interface ReviewEventIdentity {
  * telemetry. Add that verification to whatever trusted commit/claim
  * transaction Phase 9/cutover introduces; do not assume this module's
  * current passthrough already provides it.
+ *
+ * `schedulerPosition` here stays the PRE-answer SelectionTrace echo even
+ * after the RC-C `cardsSinceLastSeen` fix below -- see this module's
+ * header. The committed (post-increment) position is instead threaded
+ * through `ReviewEventExposureContext.currentPresentationSchedulerPosition`,
+ * a deliberately separate field, so this one never has to mean two
+ * different things depending which other field is being computed from it.
  */
 export interface ReviewEventPosition {
   readonly sessionPosition: number;
@@ -172,8 +187,21 @@ export interface ReviewEventGoalContext {
 export interface ReviewEventExposureContext {
   readonly sameDaySeenCountBefore: number | null;
   readonly sameDayWrongCountBefore: number | null;
-  /** See module header: null on every real caller today -- no authoritative source exists yet. */
+  /** The authoritative previous `last_presented_scheduler_position`, read BEFORE this answer overwrites it. Null means no prior v1 presentation exists -- see module header. */
   readonly previousPresentationSchedulerPosition: number | null;
+  /**
+   * RC-C: the position THIS committed answer itself occupies -- the
+   * locked pre-answer deck `scheduler_position` + 1, i.e. the same value
+   * the caller is about to persist as the new `last_presented_scheduler_
+   * position` for this card. Deliberately NOT `ReviewEventPosition.
+   * schedulerPosition` (the pre-answer SelectionTrace echo, which stays
+   * selection-time-scoped and unrelated to this field) -- see this
+   * module's header for why collapsing the two would undercount
+   * `cardsSinceLastSeen` by one. This module has no clock/DB access, so
+   * it cannot derive this value itself; the caller always knows it from
+   * the locked scheduler state it is committing.
+   */
+  readonly currentPresentationSchedulerPosition: number;
   /** Authoritative `user_card_progress.last_seen_at` read BEFORE this answer's mutation. Null for a genuinely first-ever presentation. */
   readonly lastSeenAtBefore: Date | null;
 }
@@ -336,15 +364,27 @@ function deriveSecondsSinceLastSeen(occurredAt: Date, lastSeenAtBefore: Date | n
   return Math.round((occurredAt.getTime() - lastSeenAtBefore.getTime()) / 1000);
 }
 
-/** See module header: null whenever the caller has no authoritative previous scheduler position to supply (every real caller today). */
-function deriveCardsSinceLastSeen(
-  currentSchedulerPosition: number,
+/**
+ * RC-C: `max(0, currentPresentationSchedulerPosition -
+ * previousPresentationSchedulerPosition - 1)` -- the number of committed
+ * questions strictly between the two presentations. Null whenever the
+ * caller has no authoritative previous position to supply (no prior v1
+ * presentation). `currentPresentationSchedulerPosition` MUST be the
+ * committed (post-increment) position -- see module header and
+ * `ReviewEventExposureContext.currentPresentationSchedulerPosition`'s own
+ * doc comment; passing the pre-answer SelectionTrace echo here instead
+ * reproduces the exact off-by-one this fix closes. Exported so the
+ * trusted answer-commit orchestration layer can unit-test/reuse this
+ * exact formula without a second implementation.
+ */
+export function deriveCardsSinceLastSeen(
+  currentPresentationSchedulerPosition: number,
   previousPresentationSchedulerPosition: number | null,
 ): number | null {
   if (previousPresentationSchedulerPosition === null) {
     return null;
   }
-  return Math.max(0, currentSchedulerPosition - previousPresentationSchedulerPosition - 1);
+  return Math.max(0, currentPresentationSchedulerPosition - previousPresentationSchedulerPosition - 1);
 }
 
 /**
@@ -416,7 +456,7 @@ export function buildReviewEvent(input: BuildReviewEventInput): ReviewEventPersi
     sameDaySeenCountBefore: exposure.sameDaySeenCountBefore,
     sameDayWrongCountBefore: exposure.sameDayWrongCountBefore,
     cardsSinceLastSeen: deriveCardsSinceLastSeen(
-      position.schedulerPosition,
+      exposure.currentPresentationSchedulerPosition,
       exposure.previousPresentationSchedulerPosition,
     ),
     secondsSinceLastSeen: deriveSecondsSinceLastSeen(identity.occurredAt, exposure.lastSeenAtBefore),

@@ -14,18 +14,21 @@
  * needed to run chooseNextCard in a loop and observe long-run behavior.
  *
  * ---------------------------------------------------------------------
- * Flagged gap: a Wrong on a repair retry / spaced-confirmation retry
+ * Resolved (RC-C): a Wrong on a repair retry / spaced-confirmation retry
  * ---------------------------------------------------------------------
- * The spec describes what happens on a Wrong during ordinary Active
- * acquisition (section 12.1) and on a Wrong against a long-term/Near-Due
- * card (section 16.3), but says nothing about a SECOND Wrong on the
- * repair retry itself, or a Wrong on the mandatory spaced-confirmation
- * retry. Per the Phase 6F brief ("if a state mutation needed for
- * simulation has not yet been normatively defined, STOP and report the
- * gap instead of inventing behavior"), this harness does not invent a
- * rule for either case -- applyScriptedAnswer throws if a test attempts
- * either, naming the gap explicitly rather than silently fabricating new
- * product behavior. No test in this phase exercises these paths.
+ * Previously a flagged gap (the spec described the Correct path for a
+ * repair/spaced-confirmation retry but not a Wrong one, and this harness
+ * threw rather than guess). Now locked as normative
+ * (docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md sections 12.2/13): a Wrong
+ * on an already-pending repair retry replaces the old obligation with a
+ * fresh one anchored at the current Wrong position, without advancing or
+ * regressing the acquisition stage; a Wrong on Spaced Confirmation falls
+ * back to REPAIR_PENDING with a fresh obligation. This harness now
+ * exercises the real production composition
+ * (lib/learning-engine/repair-scheduler.ts's resolveOrdinaryRepairWrong/
+ * resolveRelearningRepairWrong/resolveSpacedConfirmationWrong) rather than
+ * inventing its own -- see applyRepairRetryWrong/
+ * applySpacedConfirmationWrongAnswer below.
  *
  * ---------------------------------------------------------------------
  * Bookkeeping decisions made here (documented, not left implicit)
@@ -91,7 +94,10 @@ import { selectOrdinaryActiveCandidates } from "@/lib/learning-engine/scheduler/
 import {
   createRepairObligation,
   resolveOrdinaryRepairCorrect,
+  resolveOrdinaryRepairWrong,
   resolveRelearningRepairCorrect,
+  resolveRelearningRepairWrong,
+  resolveSpacedConfirmationWrong,
 } from "@/lib/learning-engine/repair-scheduler";
 import { applyFirstPresentation, applyNormalCorrect, applySpacedCorrect, applyWrong } from "@/lib/learning-engine/transitions";
 import {
@@ -382,17 +388,20 @@ export class SchedulerSimulation {
     }
 
     if (reason === "repair_target" || reason === "repair_hard_cap") {
-      invariant(correct, "simulation gap: a Wrong on an active repair retry is not normatively defined by the spec -- flagging rather than inventing behavior");
-      this.applyRepairRetryCorrect(card, newPosition);
+      if (correct) {
+        this.applyRepairRetryCorrect(card, newPosition);
+      } else {
+        this.applyRepairRetryWrong(card, newPosition);
+      }
       return;
     }
 
     if (reason === "spaced_confirmation") {
-      invariant(
-        correct,
-        "simulation gap: a Wrong on a spaced-confirmation retry is not normatively defined by the spec -- flagging rather than inventing behavior",
-      );
-      this.applySpacedConfirmationCorrect(card);
+      if (correct) {
+        this.applySpacedConfirmationCorrect(card);
+      } else {
+        this.applySpacedConfirmationWrongAnswer(card, newPosition);
+      }
       return;
     }
 
@@ -434,6 +443,15 @@ export class SchedulerSimulation {
     this.setCard(card.cardId, {
       ...card,
       ...result.cardState,
+      // Merge clearedRepairFields explicitly -- applyRelearningRepairCorrect
+      // alone does not clear repairPending (see that function's own doc
+      // comment); without this merge a FORGOTTEN card would reach
+      // SPACED_CONFIRMATION_PENDING with a stale repairPending = true,
+      // violating the snapshot-mapper's universal invariant (bug fixed
+      // alongside the RC-C spec-gap correction -- resolveOrdinaryRepairCorrect's
+      // own applyRepairCorrect already clears it directly, so this merge is
+      // a harmless no-op on that path).
+      ...result.clearedRepairFields,
       repairObligation: null,
       correctCooldownUntilPosition: result.nextCorrectCooldownUntilPosition,
     });
@@ -442,6 +460,33 @@ export class SchedulerSimulation {
   private applySpacedConfirmationCorrect(card: SchedulableCardRow): void {
     const cardState = applySpacedCorrect(card);
     this.setCard(card.cardId, { ...card, ...cardState, correctCooldownUntilPosition: null });
+  }
+
+  /**
+   * RC-C spec-gap correction (now-normative, sections 12.2/13): a Wrong on
+   * an already-pending repair retry replaces the old obligation with a
+   * fresh one anchored at the current Wrong position -- never advances or
+   * regresses the acquisition stage (ordinary) and never advances to
+   * SPACED_CONFIRMATION_PENDING (relearning).
+   */
+  private applyRepairRetryWrong(card: SchedulableCardRow, newPosition: number): void {
+    const result =
+      card.cardStatus === "FORGOTTEN"
+        ? resolveRelearningRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random })
+        : resolveOrdinaryRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    this.setCard(card.cardId, { ...card, ...result.cardState, repairObligation: result.repairObligation });
+  }
+
+  /**
+   * RC-C spec-gap correction (now-normative, section 13): a Wrong on the
+   * mandatory Spaced Confirmation retry falls back to REPAIR_PENDING with
+   * a fresh obligation -- the card must complete Repair -> 5-card-gap ->
+   * Spaced Correct again from scratch, never straight into another Spaced
+   * Confirmation.
+   */
+  private applySpacedConfirmationWrongAnswer(card: SchedulableCardRow, newPosition: number): void {
+    const result = resolveSpacedConfirmationWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    this.setCard(card.cardId, { ...card, ...result.cardState, repairObligation: result.repairObligation, correctCooldownUntilPosition: null });
   }
 
   private applyFsrsDueAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {

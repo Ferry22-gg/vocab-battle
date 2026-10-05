@@ -102,6 +102,8 @@ export interface ClaimNextLearningEngineCardRpcInput {
   readonly source: string | null;
   readonly selectionReason: string;
   readonly admittedCardIds: readonly string[];
+  /** RC-B corrective (lib/learning-engine/runtime/active-draw-counters.ts): claim-time active_draws_since_eligible deltas, empty when this decision's source is not "ACTIVE". */
+  readonly activeDrawCounterUpdates: readonly { cardId: string; before: number; after: number }[];
   readonly firstPassQueueBefore: readonly string[] | null;
   readonly firstPassQueueAfter: readonly string[] | null;
   readonly postMasteryShuffleBagBefore: readonly string[] | null;
@@ -157,6 +159,11 @@ export async function claimNextLearningEngineCardRpc(
     p_source: input.source,
     p_selection_reason: input.selectionReason,
     p_admitted_card_ids: input.admittedCardIds,
+    p_active_draw_counter_updates: input.activeDrawCounterUpdates.map((update) => ({
+      card_id: update.cardId,
+      before: update.before,
+      after: update.after,
+    })),
     p_first_pass_queue_before: input.firstPassQueueBefore,
     p_first_pass_queue_after: input.firstPassQueueAfter,
     p_post_mastery_shuffle_bag_before: input.postMasteryShuffleBagBefore,

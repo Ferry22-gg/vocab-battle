@@ -31,6 +31,7 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
   let testerB: ProvisionedTester;
   let sessionAId: string;
   let sessionBId: string;
+  let firstClaimCardId: string | null = null;
 
   beforeAll(async () => {
     await resetTesterLearnerData(RC_B_CLAIM_TESTER_A);
@@ -62,6 +63,7 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
     expect(result.selectionTraceId).not.toBeNull();
     expect(result.schedulerPosition).toBe(0);
     expect(result.schedulerRevision).toBe(1);
+    firstClaimCardId = result.cardId;
 
     const admin = createAdminClient();
     const { data: card } = await admin.from("cards").select("deck_id").eq("id", result.cardId!).maybeSingle();
@@ -75,6 +77,39 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
       .maybeSingle();
     expect(deckState?.scheduler_position).toBe(0);
     expect(deckState?.scheduler_revision).toBe(1);
+  });
+
+  it("RC-B corrective: the first claim's active-source selection advances active_draws_since_eligible for its other ordinary candidates, exactly once", async () => {
+    // A fresh deck's very first claim admits several NEW cards into ACTIVE
+    // simultaneously (the Fresh-limit refill, up to 6) and serves one of
+    // them via the first-pass batch -- every OTHER admitted sibling is a
+    // genuine ordinary Active candidate (never-presented NEW+ACTIVE) that
+    // survived this one ACTIVE-source slot without being selected, so it
+    // must have aged from 0 to exactly 1. Pre-check B's resolution (claim-
+    // time, not answer-time) is exercised here against the real trusted
+    // claim RPC, not merely the pure helper in isolation.
+    expect(firstClaimCardId).not.toBeNull();
+
+    const admin = createAdminClient();
+    const { data: siblings } = await admin
+      .from("user_card_progress")
+      .select("card_id, active_draws_since_eligible")
+      .eq("user_id", testerA.userId)
+      .eq("pool_status", "ACTIVE")
+      .neq("card_id", firstClaimCardId!);
+
+    expect(siblings?.length ?? 0).toBeGreaterThan(0);
+    for (const sibling of siblings ?? []) {
+      expect(sibling.active_draws_since_eligible).toBe(1);
+    }
+
+    const { data: selected } = await admin
+      .from("user_card_progress")
+      .select("active_draws_since_eligible")
+      .eq("user_id", testerA.userId)
+      .eq("card_id", firstClaimCardId!)
+      .maybeSingle();
+    expect(selected?.active_draws_since_eligible).toBe(0);
   });
 
   it("a retry for the same session returns the SAME claim unchanged (lost-response idempotency)", async () => {

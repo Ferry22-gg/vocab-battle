@@ -630,6 +630,52 @@ FRESH
 
 This avoids an asymmetric Fresh rule where an initial first-try Correct would graduate Fresh but an actual successful repair retrieval would not.
 
+## 12.5 Repair-retry Wrong (RC-C locked correction)
+
+Normative rule, locked during the v1 Runtime Cutover (RC-C) to close a gap
+this specification originally left unaddressed: a Wrong answer on an
+already-pending within-day Repair retry (i.e. the card was presented via
+the repair target or repair hard cap, section 12.2).
+
+```text
+FRESH / LEARNING_1 / LEARNING_2
+-> repair-pending card presented again
+-> Wrong (again)
+-> stage NEITHER advances NOR regresses
+-> card remains ACTIVE, remains repair-governed
+-> the OLD RepairObligation is replaced by a brand-new one,
+   anchored at the CURRENT Wrong position, sampled via the same
+   {3,4,5,6} target window / fixed 6-card hard cap as every other Wrong
+```
+
+Rationale: the repair retry presentation itself satisfied the OLD
+obligation's requirement to present the card within its window. Failing
+that retrieval again is new evidence that creates a NEW obligation — it
+does not mean the repair mechanism itself failed or should be abandoned.
+This is a direct reading of section 12.1's "on every Wrong... create a
+repair obligation" applied uniformly, including to a Wrong that happens to
+occur on an existing repair retry.
+
+```text
+Wrong A
+-> repair presented within A's 3–6 window
+-> Repair Wrong B
+-> a NEW repair window opens from B (3–6 intervening cards from B)
+-> Repair Wrong C
+-> a NEW repair window opens from C
+-> ...
+```
+
+Each new Wrong starts a fresh, bounded repair obligation. This does not
+violate the previous obligation's hard cap — that obligation was serviced
+(the card was presented within its window); it simply failed again.
+
+This does **not** apply another FSRS Again update — Repair is a within-day
+mechanism, never a second long-term FSRS failure for the same underlying
+lapse (see section 16.3's own long-term Wrong, which is the only event
+that applies FSRS Again for a given lapse). It does not increment or
+decrement `fsrs_review_correct_count`/`fsrs_review_correct_streak`.
+
 ---
 
 # 13. Repair of long-term failures / Relearning
@@ -677,6 +723,60 @@ never previously mastered (has_ever_been_mastered = false)
 previously mastered (has_ever_been_mastered = true)
   -> card_status = LEARNED, pool_status = OUTSIDE  (MASTERED RESTORED)
 ```
+
+## 13.2 Relearning Repair Wrong and Spaced Confirmation Wrong (RC-C locked correction)
+
+Normative rule, locked during the v1 Runtime Cutover (RC-C) to close a gap
+this specification originally left unaddressed, extending section 12.5's
+rule to the relearning side of the lifecycle.
+
+### Relearning Repair Wrong
+
+A Wrong on an already-pending RELEARNING repair retry (`card_status =
+FORGOTTEN`, `relearning_phase = REPAIR_PENDING`):
+
+```text
+FORGOTTEN / REPAIR_PENDING
+-> repair-pending card presented again
+-> Wrong (again)
+-> remains FORGOTTEN
+-> remains REPAIR_PENDING (does NOT advance to SPACED_CONFIRMATION_PENDING
+   -- only a Repair Correct may do that)
+-> remains ACTIVE
+-> has_ever_been_mastered is preserved, untouched
+-> the OLD RepairObligation is replaced by a brand-new one, anchored at
+   the CURRENT Wrong position, via the same construction as every other
+   Wrong (section 12.5)
+```
+
+### Spaced Confirmation Wrong
+
+A Wrong on the mandatory Spaced Confirmation retry (`card_status =
+FORGOTTEN`, `relearning_phase = SPACED_CONFIRMATION_PENDING`) means the
+earlier repair was not durably retained:
+
+```text
+FORGOTTEN / SPACED_CONFIRMATION_PENDING
+-> Spaced Confirmation Wrong
+-> falls BACK to REPAIR_PENDING (never directly to another Spaced
+   Confirmation)
+-> remains ACTIVE
+-> has_ever_been_mastered is preserved, untouched
+-> a brand-new RepairObligation is created, anchored at the CURRENT
+   Wrong position
+-> the card must complete the full sequence again from scratch:
+   new Repair Correct -> SPACED_CONFIRMATION_PENDING -> at least 5
+   intervening cards -> new Spaced Confirmation Correct -> relearning
+   complete
+```
+
+Neither case applies a second long-term FSRS Again update — the original
+qualifying long-term/Near-Due Wrong (section 16.3) already applied FSRS
+Again and reset `fsrs_review_correct_streak` to 0 for this lapse; Repair
+and Spaced Confirmation are within-day/custom-engine mechanics layered on
+top of that single long-term failure, not additional long-term failures.
+Neither case increments or decrements `fsrs_review_correct_count`/
+`fsrs_review_correct_streak`.
 
 ---
 

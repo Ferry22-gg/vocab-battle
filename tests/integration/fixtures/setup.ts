@@ -74,7 +74,50 @@ export async function setupIntegrationFixtures(): Promise<void> {
   }
 }
 
-async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string): Promise<void> {
+interface DeleteOwnedLearnerDataOptions {
+  /**
+   * true only when this call is immediately followed by deleting the
+   * profile and auth user too (teardownIntegrationFixtures) -- a genuine
+   * full account deletion. false (default) for a mid-lifecycle reset
+   * that keeps the profile/auth identity alive (resetTesterLearnerData,
+   * used between individual tests) -- the one-way rollout guard
+   * (supabase/migrations/20261015000000_learning_engine_v1_rollout_one_way_guard.sql)
+   * must keep protecting a permanent row for as long as the user still
+   * exists, so a mid-lifecycle reset must NEVER erase one (that would be
+   * exactly the "live user falls back to legacy" hole the guard exists
+   * to close) -- it leaves a permanent row in place and simply no-ops.
+   */
+  readonly fullAccountDeletion?: boolean;
+}
+
+async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string, options: DeleteOwnedLearnerDataOptions = {}): Promise<void> {
+  // learning_engine_v1_rollout (Runtime Cutover RC-A) references
+  // profiles with ON DELETE RESTRICT -- must go before any eventual
+  // profile delete (teardownIntegrationFixtures below). No other table
+  // references INTO it, so deleting it first/independently is always safe.
+  if (options.fullAccountDeletion) {
+    // The one sanctioned bypass (supabase/migrations/
+    // 20261016000000_learning_engine_v1_rollout_account_deletion.sql):
+    // removes the row even when first_v1_answer_at is set, since this
+    // call is part of a genuine full account deletion (the profile and
+    // auth user are deleted right after this returns, below). A no-op if
+    // the user has no rollout row at all.
+    const { error: rolloutDeletionError } = await admin.rpc("delete_learning_engine_v1_rollout_for_account_deletion", {
+      p_user_id: userId,
+    });
+    if (rolloutDeletionError) throw rolloutDeletionError;
+  } else {
+    // Mid-lifecycle reset: only a row still at first_v1_answer_at IS NULL
+    // may be removed -- a permanent row is left completely untouched,
+    // exactly the one-way guard's own live-user protection.
+    const { error: rolloutError } = await admin
+      .from("learning_engine_v1_rollout")
+      .delete()
+      .eq("user_id", userId)
+      .is("first_v1_answer_at", null);
+    if (rolloutError) throw rolloutError;
+  }
+
   // selection_claims (Runtime Cutover RC-B) MUST be deleted first, before
   // anything it references with ON DELETE RESTRICT -- sessions, decks,
   // cards, and learning_engine_selection_traces all reject a delete while
@@ -135,6 +178,36 @@ async function deleteOwnedLearnerData(admin: SupabaseClient, userId: string): Pr
   }
 }
 
+/**
+ * The project's one existing full account-deletion sequence (there is no
+ * separate production "delete my account" RPC to defer to -- confirmed
+ * by audit before the one-way rollout guard was added): every owned
+ * table in FK-RESTRICT order, including the sanctioned rollout-row
+ * bypass (20261016000000_learning_engine_v1_rollout_account_deletion.sql)
+ * for a user who has entered the one-way v1 zone, then the profile, then
+ * the real auth identity via the Admin API. Exported so both
+ * teardownIntegrationFixtures() and a test proving this sequence itself
+ * (tests/integration/16-learning-engine-v1-rc-c-answer-commit.test.ts)
+ * share the identical ordering rather than a second copy of it.
+ */
+export async function deleteTesterAccount(admin: SupabaseClient, userId: string): Promise<void> {
+  // fullAccountDeletion: true -- this IS the genuine full account
+  // deletion (profile and auth user are removed right below), so the
+  // one sanctioned bypass (20261016000000) removes even a permanent
+  // rollout row here. No workaround needed: the one-way guard protects
+  // a LIVE user, not account deletion itself (see deleteOwnedLearnerData's
+  // own doc comment).
+  await deleteOwnedLearnerData(admin, userId, { fullAccountDeletion: true });
+
+  // profiles.id -> auth.users.id is ON DELETE RESTRICT, so the profile
+  // row must go before the auth user.
+  const { error: profileError } = await admin.from("profiles").delete().eq("id", userId);
+  if (profileError) throw profileError;
+
+  const { error: authError } = await admin.auth.admin.deleteUser(userId);
+  if (authError) throw authError;
+}
+
 export async function teardownIntegrationFixtures(): Promise<void> {
   const admin = createAdminClient();
 
@@ -142,15 +215,7 @@ export async function teardownIntegrationFixtures(): Promise<void> {
     const userId = await findAuthUserIdByEmail(admin, identity.email);
     if (!userId) continue;
 
-    await deleteOwnedLearnerData(admin, userId);
-
-    // profiles.id -> auth.users.id is ON DELETE RESTRICT, so the profile
-    // row must go before the auth user.
-    const { error: profileError } = await admin.from("profiles").delete().eq("id", userId);
-    if (profileError) throw profileError;
-
-    const { error: authError } = await admin.auth.admin.deleteUser(userId);
-    if (authError) throw authError;
+    await deleteTesterAccount(admin, userId);
   }
 }
 

@@ -67,6 +67,7 @@ const NO_EXPOSURE: ReviewEventExposureContext = {
   sameDaySeenCountBefore: 1,
   sameDayWrongCountBefore: 0,
   previousPresentationSchedulerPosition: null,
+  currentPresentationSchedulerPosition: 501,
   lastSeenAtBefore: null,
 };
 
@@ -473,17 +474,79 @@ describe("buildReviewEvent", () => {
     expect(event.cardsSinceLastSeen).toBeNull();
   });
 
-  it("computes cardsSinceLastSeen once an authoritative previous scheduler position IS supplied", () => {
+  it("computes cardsSinceLastSeen once an authoritative previous scheduler position IS supplied, from the COMMITTED position, never the pre-answer trace echo", () => {
     const before: LearningEngineCardState = { ...INITIAL_CARD_STATE, cardStatus: "LEARNING", learningStage: "FRESH" };
     const after = applyNormalCorrect(before);
     const event = build({
       beforeState: before,
       afterState: after,
       correct: true,
-      exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: 490 },
+      exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: 490, currentPresentationSchedulerPosition: 500 },
     });
-    // schedulerPosition (POSITION.schedulerPosition) is 500 -> 500 - 490 - 1 = 9 intervening cards.
+    // exposure.currentPresentationSchedulerPosition (500) -> 500 - 490 - 1 = 9 intervening cards.
+    // POSITION.schedulerPosition is also 500 here only by fixture coincidence --
+    // the dedicated regression tests below prove the two are never the same
+    // field read twice.
     expect(event.cardsSinceLastSeen).toBe(9);
+    // The pre-answer SelectionTrace echo is untouched by this computation.
+    expect(event.schedulerPosition).toBe(POSITION.schedulerPosition);
+  });
+
+  // ===========================================================================
+  // RC-C regression: cardsSinceLastSeen must use the COMMITTED (post-
+  // increment) presentation position, never the pre-answer SelectionTrace
+  // echo (ReviewEventPosition.schedulerPosition) -- see this module's
+  // header for the full rationale and the confirmed off-by-one the old
+  // wiring produced.
+  // ===========================================================================
+  describe("RC-C regression: cardsSinceLastSeen uses the committed position, not the pre-answer trace echo", () => {
+    const before: LearningEngineCardState = { ...INITIAL_CARD_STATE, cardStatus: "LEARNING", learningStage: "FRESH" };
+    const after = applyNormalCorrect(before);
+
+    it("1. previous=2, pre-answer trace position=5, committed=6 -> cardsSinceLastSeen = 3 (NOT 2)", () => {
+      const event = build({
+        beforeState: before,
+        afterState: after,
+        correct: true,
+        position: { ...POSITION, schedulerPosition: 5 },
+        exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: 2, currentPresentationSchedulerPosition: 6 },
+      });
+      // The old (buggy) wiring would have used position.schedulerPosition (5)
+      // as the "current" operand: max(0, 5 - 2 - 1) = 2 -- this regression
+      // test fails under that wiring and passes only under the fix.
+      expect(event.cardsSinceLastSeen).toBe(3);
+      expect(event.schedulerPosition).toBe(5); // the trace echo is untouched
+    });
+
+    it("2. previous=5, committed=6 -> cardsSinceLastSeen = 0 (an adjacent repeat)", () => {
+      const event = build({
+        beforeState: before,
+        afterState: after,
+        correct: true,
+        exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: 5, currentPresentationSchedulerPosition: 6 },
+      });
+      expect(event.cardsSinceLastSeen).toBe(0);
+    });
+
+    it("3. previous=1, committed=7 -> cardsSinceLastSeen = 5", () => {
+      const event = build({
+        beforeState: before,
+        afterState: after,
+        correct: true,
+        exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: 1, currentPresentationSchedulerPosition: 7 },
+      });
+      expect(event.cardsSinceLastSeen).toBe(5);
+    });
+
+    it("4. previous=NULL -> cardsSinceLastSeen = NULL regardless of the committed position", () => {
+      const event = build({
+        beforeState: before,
+        afterState: after,
+        correct: true,
+        exposure: { ...NO_EXPOSURE, previousPresentationSchedulerPosition: null, currentPresentationSchedulerPosition: 7 },
+      });
+      expect(event.cardsSinceLastSeen).toBeNull();
+    });
   });
 
   it("is pure: does not mutate beforeState/afterState", () => {

@@ -71,6 +71,21 @@ function invariant(condition: boolean, message: string): asserts condition {
   }
 }
 
+/**
+ * RC-C spec-gap correction: three functions added beyond the original
+ * Phase 2 set -- applyRepairRetryWrong, applyRelearningRepairRetryWrong,
+ * applySpacedConfirmationWrong -- locking in the normative rule for a
+ * Wrong answer during an already-pending repair/spaced-confirmation
+ * retry (previously unspecified; the test-only simulation harness used to
+ * throw rather than guess). See docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md
+ * sections 12.2/13 for the now-normative rule these implement, and
+ * lib/learning-engine/repair-scheduler.ts's resolveOrdinaryRepairWrong/
+ * resolveRelearningRepairWrong/resolveSpacedConfirmationWrong for how each
+ * composes with a freshly sampled RepairObligation. Deliberately added as
+ * NEW functions rather than relaxing applyWrong's existing invariant --
+ * see applyRepairRetryWrong's own doc comment.
+ */
+
 // =============================================================================
 // Within-day acquisition (sections 3 "NEW"/"LEARNING", 10, 11, 12)
 // =============================================================================
@@ -172,6 +187,38 @@ export function applyRepairCorrect(state: LearningEngineCardState): LearningEngi
   return { ...state, learningStage, repairPending: false };
 }
 
+/**
+ * RC-C spec-gap correction (locked, docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md
+ * section 12.2's new "Repair-retry Wrong" subsection): a Wrong answer on an
+ * already-pending within-day Repair retry (card_status LEARNING,
+ * repairPending already true -- i.e. presented via repair_target/
+ * repair_hard_cap). The repair retry presentation itself satisfied the OLD
+ * obligation's requirement to present the card; failing it again is new
+ * evidence that creates a NEW obligation, replacing the old one -- it does
+ * NOT advance or regress the acquisition stage, and the card remains
+ * repair-governed (repairPending stays true). Deliberately does NOT reuse
+ * applyWrong -- that function's own invariant (repairPending === false)
+ * exists specifically to catch this case as a caller-sequencing error for
+ * the ORIGINAL (non-retry) Wrong path, and weakening it would blur two
+ * distinct preconditions into one permissive function (section 8 of the
+ * locked correction: "Do not create one permissive 'Wrong from anywhere'
+ * function that weakens the state machine"). The new RepairObligation
+ * itself (replacing the old one, anchored at the current Wrong position)
+ * is the repair scheduler's job -- see
+ * lib/learning-engine/repair-scheduler.ts's resolveOrdinaryRepairWrong,
+ * which composes this function with createRepairObligation unchanged.
+ */
+export function applyRepairRetryWrong(state: LearningEngineCardState): LearningEngineCardState {
+  invariant(state.cardStatus === "LEARNING", `applyRepairRetryWrong requires cardStatus LEARNING, got ${state.cardStatus}`);
+  invariant(state.learningStage !== null, "applyRepairRetryWrong requires a non-null learningStage");
+  invariant(
+    state.repairPending,
+    "applyRepairRetryWrong requires repairPending === true (this is the Wrong-on-an-already-pending-repair path; a Wrong with no repair yet pending must call applyWrong instead)",
+  );
+
+  return { ...state };
+}
+
 // =============================================================================
 // Relearning after a long-term failure (sections 13, 16.3, 25.2, 34.3)
 // =============================================================================
@@ -241,6 +288,63 @@ export function applyRelearningRepairCorrect(state: LearningEngineCardState): Le
   );
 
   return { ...state, relearningPhase: "SPACED_CONFIRMATION_PENDING" };
+}
+
+/**
+ * RC-C spec-gap correction (locked, section 13's new "Relearning Repair
+ * Wrong" subsection): the relearning analogue of applyRepairRetryWrong
+ * above -- a Wrong on an already-pending RELEARNING repair retry
+ * (card_status FORGOTTEN, relearningPhase REPAIR_PENDING). Remains
+ * FORGOTTEN, remains REPAIR_PENDING (does NOT advance to
+ * SPACED_CONFIRMATION_PENDING -- only a Repair Correct may do that),
+ * preserves hasEverBeenMastered untouched. The old obligation is replaced
+ * by a fresh one anchored at the current Wrong position -- see
+ * lib/learning-engine/repair-scheduler.ts's resolveRelearningRepairWrong.
+ */
+export function applyRelearningRepairRetryWrong(state: LearningEngineCardState): LearningEngineCardState {
+  invariant(state.cardStatus === "FORGOTTEN", `applyRelearningRepairRetryWrong requires cardStatus FORGOTTEN, got ${state.cardStatus}`);
+  invariant(
+    state.relearningPhase === "REPAIR_PENDING",
+    `applyRelearningRepairRetryWrong requires relearningPhase REPAIR_PENDING, got ${state.relearningPhase}`,
+  );
+  invariant(
+    state.repairPending,
+    "applyRelearningRepairRetryWrong requires repairPending === true (FORGOTTEN + REPAIR_PENDING always implies a complete pending RepairObligation)",
+  );
+
+  return { ...state };
+}
+
+/**
+ * RC-C spec-gap correction (locked, section 13's new "Spaced Confirmation
+ * Wrong" subsection): a Wrong on the mandatory Spaced Confirmation retry
+ * (card_status FORGOTTEN, relearningPhase SPACED_CONFIRMATION_PENDING)
+ * means the earlier repair was not durably retained. Falls BACK to
+ * REPAIR_PENDING -- never directly to another Spaced Confirmation -- so
+ * the card must complete the full Repair -> 5-card-gap -> Spaced Correct
+ * sequence again from scratch.
+ *
+ * Deliberately does NOT set repairPending itself: this function only
+ * performs the relearningPhase transition, exactly mirroring
+ * applyLongTermWrong's own established convention of leaving the fresh
+ * RepairObligation's existence (and therefore repairPending = true) to
+ * the caller that actually creates it (see this module's header and
+ * lib/learning-engine/repair-scheduler.ts's resolveSpacedConfirmationWrong,
+ * which merges repairPending: true alongside the new createRepairObligation
+ * result, composing this function rather than duplicating its invariant).
+ */
+export function applySpacedConfirmationWrong(state: LearningEngineCardState): LearningEngineCardState {
+  invariant(state.cardStatus === "FORGOTTEN", `applySpacedConfirmationWrong requires cardStatus FORGOTTEN, got ${state.cardStatus}`);
+  invariant(
+    state.relearningPhase === "SPACED_CONFIRMATION_PENDING",
+    `applySpacedConfirmationWrong requires relearningPhase SPACED_CONFIRMATION_PENDING, got ${state.relearningPhase}`,
+  );
+  invariant(
+    !state.repairPending,
+    "applySpacedConfirmationWrong requires repairPending === false (SPACED_CONFIRMATION_PENDING always implies the triggering obligation was already cleared)",
+  );
+
+  return { ...state, relearningPhase: "REPAIR_PENDING" };
 }
 
 /**

@@ -5,16 +5,31 @@ for a future runtime-cutover phase. Phase 8 built persistence capability
 only -- none of these are implemented yet, and none may be assumed solved
 by anything that exists today.
 
-## `cards_since_last_seen`
+## `cards_since_last_seen` -- CLOSED (RC-C)
 
-- Derive from the authoritative previous deck-global Learning Engine
-  presentation position (per-user-deck `scheduler_position`), not from
-  anything session-local.
-- Never approximate with `session_position`.
-- Current status and full rationale: `lib/learning-engine/telemetry/review-event.ts`
-  (module header, "`cardsSinceLastSeen`: a reported gap, not an invented
-  semantic"). The field is `NULL` for every real caller today -- no column
-  stores a card's previous presentation's `scheduler_position`.
+- Formula: `max(0, currentPresentationSchedulerPosition -
+  previousPresentationSchedulerPosition - 1)`, where
+  `currentPresentationSchedulerPosition` is the COMMITTED (post-increment)
+  scheduler_position this answer itself occupies (the locked pre-answer
+  deck `scheduler_position` + 1) -- matching every other "N intervening
+  cards" rule in the engine (e.g. `active-priority.ts`'s
+  `applyCorrectCooldown`), never the pre-answer `SelectionTrace` echo
+  stored on `ReviewEventPosition.schedulerPosition`/`answer_events.
+  scheduler_position` (which remains unchanged, selection-time-scoped, and
+  still cross-checked against its linked trace by
+  `insert_learning_engine_review_event`).
+- `previousPresentationSchedulerPosition` is read from
+  `user_card_progress.last_presented_scheduler_position` BEFORE the answer
+  overwrites it with the committed position; `NULL` means no prior v1
+  presentation exists (never approximated with `session_position`).
+- Implementation: `lib/learning-engine/telemetry/review-event.ts`'s
+  exported `deriveCardsSinceLastSeen`, fed from the new
+  `ReviewEventExposureContext.currentPresentationSchedulerPosition` field
+  (deliberately separate from `ReviewEventPosition.schedulerPosition`, so
+  that field never has to mean two different things). See that module's
+  header for the full before/after rationale, including the confirmed
+  off-by-one the pre-RC-C wiring would have produced the first time this
+  field was ever exercised with a real non-null previous position.
 
 ## `session_position`
 

@@ -46,6 +46,10 @@ export const TELEMETRY_TESTER_A = tester("916"); // Learning Engine v1 Phase 8: 
 export const TELEMETRY_TESTER_B = tester("917"); // Learning Engine v1 Phase 8: telemetry cross-entity rejection
 export const RC_B_CLAIM_TESTER_A = tester("918"); // Learning Engine v1 Runtime Cutover RC-B: selection claim transaction
 export const RC_B_CLAIM_TESTER_B = tester("919"); // Learning Engine v1 Runtime Cutover RC-B: cross-user isolation
+export const RC_C_ANSWER_TESTER_A = tester("920"); // Learning Engine v1 Runtime Cutover RC-C: answer commit transaction
+export const RC_C_ANSWER_TESTER_B = tester("921"); // Learning Engine v1 Runtime Cutover RC-C: concurrent claim/answer convergence
+export const RC_C_ANSWER_TESTER_C = tester("922"); // Learning Engine v1 Runtime Cutover RC-C: rollout-invariant rejection (deliberately never enrolled)
+export const RC_C_ANSWER_TESTER_D = tester("923"); // Learning Engine v1 Runtime Cutover RC-C: full account deletion of a one-way-zone user
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -67,6 +71,10 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   TELEMETRY_TESTER_B,
   RC_B_CLAIM_TESTER_A,
   RC_B_CLAIM_TESTER_B,
+  RC_C_ANSWER_TESTER_A,
+  RC_C_ANSWER_TESTER_B,
+  RC_C_ANSWER_TESTER_C,
+  RC_C_ANSWER_TESTER_D,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;

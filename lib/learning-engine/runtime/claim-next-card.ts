@@ -34,14 +34,27 @@ import "server-only";
  * A stale-state retry always recomputes `chooseNextCard()` from the fresh
  * snapshot -- it never attempts to reuse a stale decision's random draws
  * (brief section 9: "do not attempt to reuse a stale decision merely to
- * preserve its earlier random result").
+ * preserve its earlier random result"). The same applies to the
+ * active_draws_since_eligible deltas below: recomputed from the fresh
+ * snapshot/decision on every attempt, never carried over from a stale one.
  *
  * Isolation: not imported by app/session/*, get_next_session_card(), or
  * any live Server Action. This is the primitive a future RC-D is expected
  * to call, not a live code path today.
+ *
+ * ---------------------------------------------------------------------
+ * RC-B corrective: claim-time active_draws_since_eligible
+ * ---------------------------------------------------------------------
+ * See lib/learning-engine/runtime/active-draw-counters.ts's own module
+ * header for the full pre-check-B rationale (spec clarification 9, the
+ * simulation harness's identical `decision.source === "ACTIVE"` binding).
+ * Computed fresh every attempt, from this same snapshot/decision, and
+ * forwarded to the trusted claim RPC for atomic, structurally-validated
+ * persistence alongside the rest of this decision's claim-time state.
  */
 
 import { chooseNextCard, type RandomSource } from "@/lib/learning-engine/scheduler/next-card";
+import { computeClaimTimeActiveDrawCounterUpdates } from "@/lib/learning-engine/runtime/active-draw-counters";
 import { mapRawSchedulerSnapshot } from "@/lib/learning-engine/runtime/snapshot-mapper";
 import {
   claimNextLearningEngineCardRpc,
@@ -107,6 +120,14 @@ export async function claimNextLearningEngineCard(
     const snapshot = mapRawSchedulerSnapshot(raw);
     const decision = chooseNextCard(snapshot, random);
 
+    const activeDrawCounterUpdates = computeClaimTimeActiveDrawCounterUpdates({
+      cards: snapshot.cards,
+      admittedCardIds: decision.admittedCardIds,
+      schedulerPosition: snapshot.deckState.schedulerPosition,
+      source: decision.source,
+      selectedCardId: decision.cardId,
+    });
+
     const traceId = crypto.randomUUID();
     const payload = serializeSelectionTrace({
       trace: decision.trace,
@@ -126,6 +147,7 @@ export async function claimNextLearningEngineCard(
         source: decision.source,
         selectionReason: decision.selectionReason,
         admittedCardIds: decision.admittedCardIds,
+        activeDrawCounterUpdates,
         firstPassQueueBefore: decision.trace.firstPassQueueBefore,
         firstPassQueueAfter: decision.firstPassQueueAfter,
         postMasteryShuffleBagBefore: decision.trace.postMasteryShuffleBagBefore,

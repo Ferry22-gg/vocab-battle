@@ -7,7 +7,10 @@ import {
   applyNormalCorrect,
   applyQualifyingFsrsCorrect,
   applyRelearningRepairCorrect,
+  applyRelearningRepairRetryWrong,
   applyRepairCorrect,
+  applyRepairRetryWrong,
+  applySpacedConfirmationWrong,
   applySpacedCorrect,
   applyWrong,
 } from "@/lib/learning-engine/transitions";
@@ -150,6 +153,48 @@ describe("applyRepairCorrect (section 12.3-12.4)", () => {
   });
 });
 
+describe("applyRepairRetryWrong (RC-C spec-gap correction, section 12.2)", () => {
+  it("FRESH + repair-retry Wrong -> stage unchanged (FRESH), still repairPending", () => {
+    const wronged = applyWrong(FRESH);
+    const next = applyRepairRetryWrong(wronged);
+    expect(next.learningStage).toBe("FRESH");
+    expect(next.cardStatus).toBe("LEARNING");
+    expect(next.repairPending).toBe(true);
+  });
+
+  it("LEARNING_1 + repair-retry Wrong -> stage unchanged (LEARNING_1)", () => {
+    const l1 = applyNormalCorrect(FRESH);
+    const wronged = applyWrong(l1);
+    const next = applyRepairRetryWrong(wronged);
+    expect(next.learningStage).toBe("LEARNING_1");
+    expect(next.repairPending).toBe(true);
+  });
+
+  it("LEARNING_2 + repair-retry Wrong -> stage unchanged (LEARNING_2)", () => {
+    const l1 = applyNormalCorrect(FRESH);
+    const l2 = applyNormalCorrect(l1);
+    const wronged = applyWrong(l2);
+    const next = applyRepairRetryWrong(wronged);
+    expect(next.learningStage).toBe("LEARNING_2");
+    expect(next.repairPending).toBe(true);
+  });
+
+  it("throws if repairPending is false (the non-pending Wrong path must call applyWrong instead)", () => {
+    expect(() => applyRepairRetryWrong(FRESH)).toThrow(/requires repairPending === true/);
+  });
+
+  it("throws if cardStatus is not LEARNING", () => {
+    expect(() => applyRepairRetryWrong({ ...INITIAL_CARD_STATE, repairPending: true })).toThrow(/requires cardStatus LEARNING/);
+  });
+
+  it("does not touch mastery counters", () => {
+    const wronged = applyWrong({ ...FRESH, fsrsReviewCorrectCount: 3, fsrsReviewCorrectStreak: 2 });
+    const next = applyRepairRetryWrong(wronged);
+    expect(next.fsrsReviewCorrectCount).toBe(3);
+    expect(next.fsrsReviewCorrectStreak).toBe(2);
+  });
+});
+
 describe("applyLongTermWrong (sections 16.3, 34.3)", () => {
   it("ACQUIRED/OUTSIDE Wrong -> FORGOTTEN, pool ACTIVE, REPAIR_PENDING, streak reset, count preserved", () => {
     const before = acquired({ fsrsReviewCorrectCount: 2, fsrsReviewCorrectStreak: 2 });
@@ -195,6 +240,86 @@ describe("applyRelearningRepairCorrect (section 13)", () => {
 
   it("throws if cardStatus is not FORGOTTEN", () => {
     expect(() => applyRelearningRepairCorrect(acquired())).toThrow(/requires cardStatus FORGOTTEN/);
+  });
+});
+
+describe("applyRelearningRepairRetryWrong (RC-C spec-gap correction, section 13)", () => {
+  it("FORGOTTEN + REPAIR_PENDING + Wrong -> remains FORGOTTEN, remains REPAIR_PENDING (never advances to SPACED_CONFIRMATION_PENDING)", () => {
+    const forgotten = applyLongTermWrong(acquired());
+    const repairPending: LearningEngineCardState = { ...forgotten, repairPending: true };
+    const next = applyRelearningRepairRetryWrong(repairPending);
+    expect(next.cardStatus).toBe("FORGOTTEN");
+    expect(next.relearningPhase).toBe("REPAIR_PENDING");
+  });
+
+  it("preserves hasEverBeenMastered", () => {
+    const forgotten = applyLongTermWrong(learned());
+    const repairPending: LearningEngineCardState = { ...forgotten, repairPending: true };
+    const next = applyRelearningRepairRetryWrong(repairPending);
+    expect(next.hasEverBeenMastered).toBe(true);
+  });
+
+  it("throws if relearningPhase is not REPAIR_PENDING", () => {
+    expect(() =>
+      applyRelearningRepairRetryWrong({ ...INITIAL_CARD_STATE, cardStatus: "FORGOTTEN", relearningPhase: "SPACED_CONFIRMATION_PENDING" }),
+    ).toThrow(/requires relearningPhase REPAIR_PENDING/);
+  });
+
+  it("throws if repairPending is false", () => {
+    const forgotten = applyLongTermWrong(acquired());
+    expect(() => applyRelearningRepairRetryWrong(forgotten)).toThrow(/requires repairPending === true/);
+  });
+
+  it("throws if cardStatus is not FORGOTTEN", () => {
+    expect(() => applyRelearningRepairRetryWrong(acquired())).toThrow(/requires cardStatus FORGOTTEN/);
+  });
+});
+
+/**
+ * A valid FORGOTTEN + SPACED_CONFIRMATION_PENDING fixture -- repairPending
+ * false, per the snapshot-mapper's own universal invariant (the triggering
+ * obligation has already been cleared). Built directly rather than via
+ * applyRelearningRepairCorrect, which alone does not clear repairPending --
+ * that merge is resolveRelearningRepairCorrect's `clearedRepairFields`
+ * composition's job (see repair-scheduler.ts), not this function's.
+ */
+function spacedConfirmationPending(overrides: Partial<LearningEngineCardState> = {}): LearningEngineCardState {
+  return {
+    ...applyLongTermWrong(acquired()),
+    relearningPhase: "SPACED_CONFIRMATION_PENDING",
+    repairPending: false,
+    ...overrides,
+  };
+}
+
+describe("applySpacedConfirmationWrong (RC-C spec-gap correction, section 13)", () => {
+  it("FORGOTTEN + SPACED_CONFIRMATION_PENDING + Wrong -> falls back to REPAIR_PENDING, stays FORGOTTEN", () => {
+    const next = applySpacedConfirmationWrong(spacedConfirmationPending());
+    expect(next.cardStatus).toBe("FORGOTTEN");
+    expect(next.relearningPhase).toBe("REPAIR_PENDING");
+  });
+
+  it("does NOT itself set repairPending (left to the caller that creates the fresh obligation -- see repair-scheduler.ts's resolveSpacedConfirmationWrong)", () => {
+    const next = applySpacedConfirmationWrong(spacedConfirmationPending());
+    expect(next.repairPending).toBe(false);
+  });
+
+  it("preserves hasEverBeenMastered", () => {
+    const next = applySpacedConfirmationWrong(spacedConfirmationPending({ hasEverBeenMastered: true }));
+    expect(next.hasEverBeenMastered).toBe(true);
+  });
+
+  it("throws if relearningPhase is not SPACED_CONFIRMATION_PENDING", () => {
+    const repairPending = applyLongTermWrong(acquired());
+    expect(() => applySpacedConfirmationWrong(repairPending)).toThrow(/requires relearningPhase SPACED_CONFIRMATION_PENDING/);
+  });
+
+  it("throws if repairPending is true (SPACED_CONFIRMATION_PENDING always implies the triggering obligation was already cleared)", () => {
+    expect(() => applySpacedConfirmationWrong(spacedConfirmationPending({ repairPending: true }))).toThrow(/requires repairPending === false/);
+  });
+
+  it("throws if cardStatus is not FORGOTTEN", () => {
+    expect(() => applySpacedConfirmationWrong(acquired())).toThrow(/requires cardStatus FORGOTTEN/);
   });
 });
 

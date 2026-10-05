@@ -68,7 +68,13 @@ import {
   WRONG_RETRY_HARD_CAP,
 } from "@/lib/learning-engine/config";
 import { applyCorrectCooldown, isEligibleForNormalSelection } from "@/lib/learning-engine/active-priority";
-import { applyRelearningRepairCorrect, applyRepairCorrect } from "@/lib/learning-engine/transitions";
+import {
+  applyRelearningRepairCorrect,
+  applyRelearningRepairRetryWrong,
+  applyRepairCorrect,
+  applyRepairRetryWrong,
+  applySpacedConfirmationWrong,
+} from "@/lib/learning-engine/transitions";
 import type { RandomSource } from "@/lib/learning-engine/active-pool";
 import type { LearningEngineCardState } from "@/lib/learning-engine/state";
 
@@ -337,6 +343,78 @@ export function resolveRelearningRepairCorrect(
 
 /** Re-exported so callers checking the post-repair spaced-confirmation gate don't need a second import of active-priority.ts just for this one function. */
 export { isEligibleForNormalSelection };
+
+// =============================================================================
+// RC-C spec-gap correction: Wrong during an already-pending repair/
+// spaced-confirmation retry (docs/LEARNING_ENGINE_V1_SPEC_FOR_CLAUDE.md
+// sections 12.2/13, now-normative). "The retry presentation itself
+// satisfied the OLD obligation's requirement to present the card. But
+// because retrieval failed again, that Wrong creates a NEW repair
+// obligation" -- anchored at the CURRENT committed Wrong position, via
+// the SAME createRepairObligation() used for every other Wrong (never a
+// second repair-window formula). No correct-cooldown gate is involved in
+// any of these three resolutions -- a Wrong never starts one.
+// =============================================================================
+
+export interface RepairWrongResolution {
+  readonly cardState: LearningEngineCardState;
+  /** The fresh obligation replacing whatever was pending before -- the old one is discarded by construction (a caller persists only this one). */
+  readonly repairObligation: RepairObligation;
+}
+
+export interface ResolveRepairWrongInput {
+  readonly cardState: LearningEngineCardState;
+  readonly cardId: string;
+  /** The current committed scheduler position -- becomes the new obligation's wrongPosition. Normal live v1 behavior; no synthetic position involved. */
+  readonly wrongPosition: number;
+  readonly random: RandomSource;
+}
+
+/**
+ * Section 12.2 addendum: ordinary within-day Repair Wrong (FRESH/
+ * LEARNING_1/LEARNING_2, repairPending already true). Stage is neither
+ * advanced nor regressed -- applyRepairRetryWrong's own invariant already
+ * guarantees repairPending stays true, matching the new obligation's
+ * existence without this function needing to merge it in separately
+ * (contrast resolveSpacedConfirmationWrong below).
+ */
+export function resolveOrdinaryRepairWrong(input: ResolveRepairWrongInput): RepairWrongResolution {
+  return {
+    cardState: applyRepairRetryWrong(input.cardState),
+    repairObligation: createRepairObligation({ cardId: input.cardId, wrongPosition: input.wrongPosition, random: input.random }),
+  };
+}
+
+/**
+ * Section 13 addendum: relearning Repair Wrong (FORGOTTEN, relearningPhase
+ * REPAIR_PENDING already). Remains FORGOTTEN/REPAIR_PENDING -- never
+ * advances to SPACED_CONFIRMATION_PENDING on a Wrong.
+ */
+export function resolveRelearningRepairWrong(input: ResolveRepairWrongInput): RepairWrongResolution {
+  return {
+    cardState: applyRelearningRepairRetryWrong(input.cardState),
+    repairObligation: createRepairObligation({ cardId: input.cardId, wrongPosition: input.wrongPosition, random: input.random }),
+  };
+}
+
+/**
+ * Section 13 addendum: Spaced Confirmation Wrong (FORGOTTEN,
+ * relearningPhase SPACED_CONFIRMATION_PENDING). Falls back to
+ * REPAIR_PENDING -- the card must complete the full Repair -> 5-card-gap
+ * -> Spaced Correct sequence again. Unlike the two resolutions above,
+ * applySpacedConfirmationWrong does NOT itself set repairPending (it
+ * mirrors applyLongTermWrong's own established convention of leaving a
+ * freshly-created obligation's existence to the caller) -- so this
+ * function merges `repairPending: true` here, at the one call site that
+ * actually creates the obligation, exactly where resolveLongTermWrong's
+ * own caller is expected to do the equivalent merge for a long-term Wrong.
+ */
+export function resolveSpacedConfirmationWrong(input: ResolveRepairWrongInput): RepairWrongResolution {
+  return {
+    cardState: { ...applySpacedConfirmationWrong(input.cardState), repairPending: true },
+    repairObligation: createRepairObligation({ cardId: input.cardId, wrongPosition: input.wrongPosition, random: input.random }),
+  };
+}
 
 // =============================================================================
 // Lifecycle-gap fix (review, section 7): the positive "due" signal that

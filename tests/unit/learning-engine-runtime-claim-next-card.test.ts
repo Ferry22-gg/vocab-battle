@@ -188,6 +188,82 @@ describe("claimNextLearningEngineCard", () => {
     });
   });
 
+  it("RC-B corrective: an ACTIVE-source decision forwards claim-time active_draws_since_eligible deltas to the claim RPC", async () => {
+    fetchSchedulerSnapshot.mockResolvedValue({
+      ...RAW_SNAPSHOT_NO_OPEN_CLAIM,
+      cards: [{ cardId: "card-1" }, { cardId: "card-2" }],
+    });
+    mapRawSchedulerSnapshot.mockReturnValue({
+      ...MAPPED_SNAPSHOT,
+      cards: [
+        {
+          cardId: "card-1",
+          cardStatus: "LEARNING",
+          learningStage: "FRESH",
+          poolStatus: "ACTIVE",
+          relearningPhase: null,
+          hasEverBeenMastered: false,
+          repairPending: false,
+          fsrsReviewCorrectCount: 0,
+          fsrsReviewCorrectStreak: 0,
+          correctCooldownUntilPosition: null,
+          activeDrawsSinceEligible: 5,
+          repairObligation: null,
+        },
+        {
+          cardId: "card-2",
+          cardStatus: "LEARNING",
+          learningStage: "LEARNING_1",
+          poolStatus: "ACTIVE",
+          relearningPhase: null,
+          hasEverBeenMastered: false,
+          repairPending: false,
+          fsrsReviewCorrectCount: 0,
+          fsrsReviewCorrectStreak: 0,
+          correctCooldownUntilPosition: null,
+          activeDrawsSinceEligible: 10,
+          repairObligation: null,
+        },
+      ],
+    });
+    chooseNextCard.mockReturnValue(makeDecision({ cardId: "card-1", source: "ACTIVE" }));
+    claimNextLearningEngineCardRpc.mockResolvedValue({
+      reused: false,
+      claim: { id: "claim-2", card_id: "card-1", selection_trace_id: "trace-2", scheduler_position: 5, scheduler_revision: 3 },
+      trace: { id: "trace-2", card_id: "card-1", scheduler_position: 5, scheduler_revision: 2 },
+      schedulerRevision: 3,
+    });
+
+    await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
+
+    expect(claimNextLearningEngineCardRpc).toHaveBeenCalledTimes(1);
+    const callInput = claimNextLearningEngineCardRpc.mock.calls[0][0];
+    expect(callInput.activeDrawCounterUpdates).toEqual(
+      expect.arrayContaining([
+        { cardId: "card-1", before: 5, after: 0 },
+        { cardId: "card-2", before: 10, after: 11 },
+      ]),
+    );
+    expect(callInput.activeDrawCounterUpdates).toHaveLength(2);
+  });
+
+  it("RC-B corrective: a non-ACTIVE-source decision forwards an empty active_draws_since_eligible delta list", async () => {
+    fetchSchedulerSnapshot.mockResolvedValue(RAW_SNAPSHOT_NO_OPEN_CLAIM);
+    mapRawSchedulerSnapshot.mockReturnValue(MAPPED_SNAPSHOT);
+    chooseNextCard.mockReturnValue(makeDecision({ cardId: "card-7", source: "FSRS_DUE", selectionReason: "due_weighted_selection" }));
+    claimNextLearningEngineCardRpc.mockResolvedValue({
+      reused: false,
+      claim: { id: "claim-8", card_id: "card-7", selection_trace_id: "trace-8", scheduler_position: 5, scheduler_revision: 3 },
+      trace: { id: "trace-8", card_id: "card-7", scheduler_position: 5, scheduler_revision: 2 },
+      schedulerRevision: 3,
+    });
+
+    await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
+
+    const callInput = claimNextLearningEngineCardRpc.mock.calls[0][0];
+    expect(callInput.activeDrawCounterUpdates).toEqual([]);
+  });
+
   it("a stale-revision rejection triggers a fresh read + re-decision + retry, converging on success", async () => {
     fetchSchedulerSnapshot.mockResolvedValue(RAW_SNAPSHOT_NO_OPEN_CLAIM);
     mapRawSchedulerSnapshot.mockReturnValue(MAPPED_SNAPSHOT);

@@ -18,7 +18,7 @@
 -- commit_answer_transaction().
 
 BEGIN;
-SELECT plan(65);
+SELECT plan(75);
 
 -- =========================================================================
 -- Fixtures: four testers.
@@ -90,7 +90,10 @@ CREATE FUNCTION pg_temp.claim(
   p_first_pass_queue_after uuid[] DEFAULT NULL,
   p_shuffle_bag_before uuid[] DEFAULT NULL,
   p_shuffle_bag_after uuid[] DEFAULT NULL,
-  p_trace_id uuid DEFAULT gen_random_uuid()
+  p_trace_id uuid DEFAULT gen_random_uuid(),
+  -- RC-B corrective (20261011000000): claim-time active_draws_since_eligible
+  -- deltas, as an array of {"card_id": uuid, "before": integer, "after": integer}.
+  p_active_draw_counter_updates jsonb DEFAULT NULL
 ) RETURNS jsonb
 LANGUAGE sql
 AS $$
@@ -109,7 +112,8 @@ AS $$
     0, 0, 0, 0,
     NULL, NULL, NULL,
     false, '{}'::double precision[],
-    'learning-engine-v1.0', '{}'::jsonb
+    'learning-engine-v1.0', '{}'::jsonb,
+    p_active_draw_counter_updates
   );
 $$;
 
@@ -568,6 +572,123 @@ SELECT tests.clear_auth();
 SELECT is(
   (SELECT count(*)::integer FROM public.user_deck_learning_state WHERE user_id = :'legacy_tester_id'::uuid),
   0, 'E3: no user_deck_learning_state row was ever fabricated for the pure-legacy tester'
+);
+
+-- =========================================================================
+-- Section F (RC-B corrective, 20261011000000): claim-time
+-- active_draws_since_eligible updates -- the DB's own structural contract
+-- only (deck/user membership, non-negative after-value, stale
+-- before-value rejection, single revision bump, fast-path/abandonment
+-- idempotency). WHY a card is or is not an eligible ordinary Active
+-- candidate is exclusively TypeScript policy, already covered by
+-- tests/unit/learning-engine-active-draw-counters.test.ts -- this
+-- function must never be asked to re-derive it, so this section never
+-- constructs cooldown/repair-governance fixtures to probe that question.
+-- =========================================================================
+
+SELECT gen_random_uuid() AS tester_f_id \gset
+SELECT tests.create_test_profile(:'tester_f_id'::uuid, 'test_g19_tester_f');
+SELECT tests.authenticate_as(:'tester_f_id'::uuid);
+SELECT (public.duplicate_starter_deck(:'official_deck_id'::uuid)).id AS deck_f \gset
+SELECT (public.start_or_resume_session()).id AS session_f \gset
+SELECT tests.clear_auth();
+UPDATE public.sessions SET engine_version = 'v1' WHERE id = :'session_f'::uuid;
+
+SELECT id AS card_f1 FROM public.cards WHERE deck_id = :'deck_f'::uuid ORDER BY sort_order LIMIT 1 OFFSET 0 \gset
+SELECT id AS card_f2 FROM public.cards WHERE deck_id = :'deck_f'::uuid ORDER BY sort_order LIMIT 1 OFFSET 1 \gset
+
+SELECT tests.authenticate_as_service_role();
+-- Lazily initialize deck_f's user_deck_learning_state row.
+SELECT public.get_learning_engine_v1_scheduler_snapshot(:'tester_f_id'::uuid, :'session_f'::uuid);
+
+-- Fixture: nonzero pre-existing counter values to prove real deltas, not
+-- merely 0 -> 0/1.
+UPDATE public.user_card_progress SET active_draws_since_eligible = 5 WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f1'::uuid;
+UPDATE public.user_card_progress SET active_draws_since_eligible = 10 WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f2'::uuid;
+
+-- F1: a counter update referencing a card from a DIFFERENT deck is
+-- rejected -- "no unrelated card may be mutated" (session_f still has no
+-- OPEN claim, so this reaches real validation, not the fast path).
+SELECT tests.throws_sqlstate(
+  format(
+    $sql$select pg_temp.claim(%L, %L, %L, 0, 0, %L, '{}', NULL, NULL, NULL, NULL, gen_random_uuid(), %L::jsonb)$sql$,
+    :'tester_f_id', :'session_f', :'deck_f', :'card_f1',
+    jsonb_build_array(jsonb_build_object('card_id', :'card_b1', 'before', 0, 'after', 1))::text
+  ),
+  '42501', 'F1: an active-draw-counter update referencing a card from a different deck is rejected'
+);
+
+-- F2: a negative after-value is rejected.
+SELECT tests.throws_sqlstate(
+  format(
+    $sql$select pg_temp.claim(%L, %L, %L, 0, 0, %L, '{}', NULL, NULL, NULL, NULL, gen_random_uuid(), %L::jsonb)$sql$,
+    :'tester_f_id', :'session_f', :'deck_f', :'card_f1',
+    jsonb_build_array(jsonb_build_object('card_id', :'card_f1', 'before', 5, 'after', -1))::text
+  ),
+  '22023', 'F2: an active-draw-counter update with a negative after-value is rejected'
+);
+
+-- F3: a stale expected before-value is rejected (same SQLSTATE 40001
+-- class as the outer scheduler_position/scheduler_revision check).
+SELECT tests.throws_sqlstate(
+  format(
+    $sql$select pg_temp.claim(%L, %L, %L, 0, 0, %L, '{}', NULL, NULL, NULL, NULL, gen_random_uuid(), %L::jsonb)$sql$,
+    :'tester_f_id', :'session_f', :'deck_f', :'card_f1',
+    jsonb_build_array(jsonb_build_object('card_id', :'card_f1', 'before', 999, 'after', 0))::text
+  ),
+  '40001', 'F3: a stale expected active_draws_since_eligible before-value is rejected'
+);
+
+-- F4-F6: the successful claim -- card_f1 (selected) resets to 0, card_f2
+-- (another eligible candidate) ages to 11, and the WHOLE claim -- card
+-- selection plus both counter deltas -- bumps scheduler_revision exactly
+-- once, never twice.
+SELECT pg_temp.claim(
+  :'tester_f_id', :'session_f', :'deck_f', 0, 0, :'card_f1', '{}', NULL, NULL, NULL, NULL, gen_random_uuid(),
+  jsonb_build_array(
+    jsonb_build_object('card_id', :'card_f1', 'before', 5, 'after', 0),
+    jsonb_build_object('card_id', :'card_f2', 'before', 10, 'after', 11)
+  )
+) AS counter_claim_result \gset
+
+SELECT is(
+  (SELECT active_draws_since_eligible FROM public.user_card_progress WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f1'::uuid),
+  0, 'F4: the selected card''s active_draws_since_eligible resets to 0'
+);
+SELECT is(
+  (SELECT active_draws_since_eligible FROM public.user_card_progress WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f2'::uuid),
+  11, 'F5: another eligible ordinary Active card''s active_draws_since_eligible ages by exactly 1'
+);
+SELECT is(
+  (SELECT scheduler_revision FROM public.user_deck_learning_state WHERE user_id = :'tester_f_id'::uuid AND deck_id = :'deck_f'::uuid),
+  1, 'F6: the claim + both counter deltas together bump scheduler_revision exactly once, not twice'
+);
+
+-- F7: the OPEN-claim fast path never re-applies or duplicates a counter
+-- update -- a retry naming a different card and a garbage counter payload
+-- is fully ignored.
+SELECT pg_temp.claim(
+  :'tester_f_id', :'session_f', :'deck_f', 0, 0, :'card_f2', '{}', NULL, NULL, NULL, NULL, gen_random_uuid(),
+  jsonb_build_array(jsonb_build_object('card_id', :'card_f1', 'before', 0, 'after', 99))
+) AS retry_counter_result \gset
+SELECT is((:'retry_counter_result'::jsonb ->> 'reused')::boolean, true, 'F7a: the retry hits the OPEN-claim fast path');
+SELECT is(
+  (SELECT active_draws_since_eligible FROM public.user_card_progress WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f1'::uuid),
+  0, 'F7b: the fast path leaves the already-persisted counter value untouched (no duplicate update)'
+);
+
+-- F8: once the claim is closed (simulating a future RC-C answer-commit or
+-- an abandonment), the claim-time counter values remain exactly as
+-- persisted -- nothing reverts them.
+UPDATE public.selection_claims SET status = 'ANSWERED', closed_at = now()
+WHERE session_id = :'session_f'::uuid AND status = 'OPEN';
+SELECT is(
+  (SELECT active_draws_since_eligible FROM public.user_card_progress WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f1'::uuid),
+  0, 'F8a: closing the claim does not revert the selected card''s counter'
+);
+SELECT is(
+  (SELECT active_draws_since_eligible FROM public.user_card_progress WHERE user_id = :'tester_f_id'::uuid AND card_id = :'card_f2'::uuid),
+  11, 'F8b: closing the claim does not revert the other card''s counter'
 );
 
 SELECT * FROM finish();
