@@ -43,7 +43,13 @@ import { usePrefersReducedMotion } from "@/lib/session-ui/reduced-motion";
 import { sessionSounds } from "@/lib/session-ui/sound";
 import { FlashCard } from "./flash-card";
 import { ActionZone } from "./action-zone";
-import { BattleScene, type ComboFx, type DailyGoalFx, type DefeatFx, type HitFx } from "./battle-scene";
+import { BattleScene, type ComboFx, type DefeatFx, type HitFx } from "./battle-scene";
+import {
+  TopBadgeStack,
+  type CardMasteredFx,
+  type DailyGoalFx,
+  type FullMasteryFx,
+} from "./top-badge-stack";
 
 /** A currently-in-flight-or-retryable grading attempt for the visible card. */
 interface PendingSubmission {
@@ -60,6 +66,8 @@ const HIT_FX_MS = 700;
 const COMBO_FX_MS = 1400;
 const DEFEAT_FX_MS = 450;
 const DAILY_GOAL_FX_MS = 2200;
+/** Matches CardMasteredToast/FullMasteryToast's own vb-toast-fade duration (app/session/mastery-toast.tsx). */
+const MASTERY_FX_MS = 2200;
 
 export function SessionScreen({
   sessionId,
@@ -78,6 +86,8 @@ export function SessionScreen({
   const [comboFx, setComboFx] = useState<ComboFx | null>(null);
   const [defeatFx, setDefeatFx] = useState<DefeatFx | null>(null);
   const [dailyGoalFx, setDailyGoalFx] = useState<DailyGoalFx | null>(null);
+  const [cardMasteredFx, setCardMasteredFx] = useState<CardMasteredFx | null>(null);
+  const [fullMasteryFx, setFullMasteryFx] = useState<FullMasteryFx | null>(null);
 
   const reducedMotion = usePrefersReducedMotion();
 
@@ -91,13 +101,22 @@ export function SessionScreen({
   const comboFxTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const defeatFxTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dailyGoalFxTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardMasteredFxTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fullMasteryFxTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      [hitFxTimeoutRef, comboFxTimeoutRef, defeatFxTimeoutRef, dailyGoalFxTimeoutRef].forEach((ref) => {
+      [
+        hitFxTimeoutRef,
+        comboFxTimeoutRef,
+        defeatFxTimeoutRef,
+        dailyGoalFxTimeoutRef,
+        cardMasteredFxTimeoutRef,
+        fullMasteryFxTimeoutRef,
+      ].forEach((ref) => {
         if (ref.current) clearTimeout(ref.current);
       });
     };
@@ -216,6 +235,25 @@ export function SessionScreen({
         scheduleFx(dailyGoalFxTimeoutRef, setDailyGoalFx, { key: fxKey }, DAILY_GOAL_FX_MS);
       }
 
+      // Runtime Cutover RC-E (spec sections 15/25.1): transient mastery UI
+      // only ever fires for a fresh commit -- a genuine same-client_event_id
+      // replay (data.isReplay) may truthfully carry the same mastery flags
+      // (they're read straight off the historical persisted answer_event/
+      // user_deck_learning_state), but re-showing the toast for it would be
+      // a duplicate, not a new event. Both events can fire on the exact
+      // same answer (the final card both masters itself and completes the
+      // deck) -- each gets its own independent, non-blocking fx slot, so
+      // neither can suppress the other and neither can delay refetchCard()
+      // below.
+      if (!data.isReplay) {
+        if (data.cardMasteredJustNow) {
+          scheduleFx(cardMasteredFxTimeoutRef, setCardMasteredFx, { key: fxKey }, MASTERY_FX_MS);
+        }
+        if (data.fullMasteryJustAchieved === true) {
+          scheduleFx(fullMasteryFxTimeoutRef, setFullMasteryFx, { key: fxKey }, MASTERY_FX_MS);
+        }
+      }
+
       dispatchGuard({ type: "GRADE_RESULT", retry: false });
       setPendingSubmission(null);
       await refetchCard();
@@ -247,6 +285,13 @@ export function SessionScreen({
       </header>
 
       <main className="mx-auto flex w-full max-w-sm flex-1 min-h-0 flex-col justify-center gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <TopBadgeStack
+          reducedMotion={reducedMotion}
+          dailyGoalFx={dailyGoalFx}
+          cardMasteredFx={cardMasteredFx}
+          fullMasteryFx={fullMasteryFx}
+        />
+
         {cardState.kind === "card" && (
           <>
             <BattleScene
@@ -257,7 +302,6 @@ export function SessionScreen({
               hitFx={hitFx}
               comboFx={comboFx}
               defeatFx={defeatFx}
-              dailyGoalFx={dailyGoalFx}
             />
 
             <FlashCard

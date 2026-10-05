@@ -30,10 +30,6 @@ export interface DefeatFx {
   readonly visual: EnemyVisual;
 }
 
-export interface DailyGoalFx {
-  readonly key: number;
-}
-
 export function BattleScene({
   enemy,
   hp,
@@ -42,7 +38,6 @@ export function BattleScene({
   hitFx,
   comboFx,
   defeatFx,
-  dailyGoalFx,
 }: {
   readonly enemy: EnemyVisual | null;
   readonly hp: number;
@@ -51,7 +46,6 @@ export function BattleScene({
   readonly hitFx: HitFx | null;
   readonly comboFx: ComboFx | null;
   readonly defeatFx: DefeatFx | null;
-  readonly dailyGoalFx: DailyGoalFx | null;
 }) {
   const percent = clampHpPercent(hp, maxHp);
 
@@ -60,20 +54,6 @@ export function BattleScene({
       className="relative flex shrink-0 flex-col items-center justify-end"
       style={{ minHeight: "clamp(232px, 37vh, 320px)" }}
     >
-      {dailyGoalFx && (
-        <div
-          key={`daily-goal-${dailyGoalFx.key}`}
-          role="status"
-          aria-live="polite"
-          className={
-            "pointer-events-none absolute top-1 z-10 rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800 shadow-sm dark:bg-sky-900/60 dark:text-sky-200" +
-            (reducedMotion ? "" : " animate-[vb-toast-fade_2200ms_ease-in-out_forwards]")
-          }
-        >
-          ✓ Daily Goal complete
-        </div>
-      )}
-
       <div className="relative flex flex-1 items-end justify-center">
         {enemy && (
           <div style={{ width: enemy.sizePx, height: enemy.sizePx }} className="relative select-none">

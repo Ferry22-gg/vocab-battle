@@ -15,7 +15,12 @@
 
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
-import type { CardStatus } from "@/lib/learning-engine/state";
+import type { CardStatus, LearningStage } from "@/lib/learning-engine/state";
+import {
+  computeDeckProgress,
+  type DeckProgressCardInput,
+  type DeckProgressResult,
+} from "@/lib/learning-engine/progress/deck-progress";
 
 const STARTER_DECK_COLUMNS = "id, name, description";
 
@@ -268,9 +273,19 @@ export type DeckCard = {
   back: string;
   /** The caller's own learning-engine status for this card (spec section 3.1), for CardStatusBadge. Defaults to 'NEW' when no `user_card_progress` row exists yet -- e.g. an official template the caller is viewing but has never duplicated/owned (no per-user progress row is ever created for a template's own cards). */
   cardStatus: CardStatus;
+  /**
+   * Runtime Cutover RC-E: the caller's own `learning_stage`, for
+   * computeDeckProgress() (lib/learning-engine/progress/deck-progress.ts)
+   * -- fetched alongside cardStatus so Deck Detail's existing single
+   * query also supplies Deck Progress with no second round trip. `null`
+   * both when no progress row exists (matching cardStatus's own 'NEW'
+   * default) and whenever cardStatus isn't 'LEARNING' -- identical to
+   * LearningStage's own documented contract (lib/learning-engine/state.ts).
+   */
+  learningStage: LearningStage;
 };
 
-const DECK_CARD_COLUMNS = "id, front, back, user_card_progress(card_status)";
+const DECK_CARD_COLUMNS = "id, front, back, user_card_progress(card_status, learning_stage)";
 
 /**
  * Lists a deck's non-deleted cards in display order, with each card's
@@ -306,7 +321,7 @@ export async function listCardsForDeck(deckId: string): Promise<DeckCard[]> {
     id: string;
     front: string;
     back: string;
-    user_card_progress: readonly { card_status: CardStatus }[];
+    user_card_progress: readonly { card_status: CardStatus; learning_stage: LearningStage }[];
   }[];
 
   return rows.map((row) => ({
@@ -314,7 +329,56 @@ export async function listCardsForDeck(deckId: string): Promise<DeckCard[]> {
     front: row.front,
     back: row.back,
     cardStatus: row.user_card_progress[0]?.card_status ?? "NEW",
+    learningStage: row.user_card_progress[0]?.learning_stage ?? null,
   }));
+}
+
+/**
+ * Runtime Cutover RC-E: one batched Deck Progress computation per deck id,
+ * for the Decks list (`app/decks/page.tsx`) -- mirrors
+ * getMasteredCountsByDeck()'s own shape exactly (one query covering every
+ * requested deck, never one query per deck) so rendering Deck Progress on
+ * every row never becomes an N+1 regression. Like listCardsForDeck, reads
+ * FROM `cards` (not `user_card_progress`) so a card with no progress row
+ * yet still contributes its correct 'NEW' bucket, and is scoped by the
+ * same RLS as every other read in this file.
+ */
+export async function getDeckProgressByDeck(deckIds: readonly string[]): Promise<Map<string, DeckProgressResult>> {
+  if (deckIds.length === 0) {
+    return new Map();
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("cards")
+    .select("deck_id, user_card_progress(card_status, learning_stage)")
+    .in("deck_id", deckIds)
+    .is("deleted_at", null);
+
+  if (error) {
+    throw new Error("Failed to load deck progress", { cause: error });
+  }
+
+  const rows = (data ?? []) as unknown as readonly {
+    deck_id: string;
+    user_card_progress: readonly { card_status: CardStatus; learning_stage: LearningStage }[];
+  }[];
+
+  const cardsByDeck = new Map<string, DeckProgressCardInput[]>();
+  for (const row of rows) {
+    const cards = cardsByDeck.get(row.deck_id) ?? [];
+    cards.push({
+      cardStatus: row.user_card_progress[0]?.card_status ?? "NEW",
+      learningStage: row.user_card_progress[0]?.learning_stage ?? null,
+    });
+    cardsByDeck.set(row.deck_id, cards);
+  }
+
+  const result = new Map<string, DeckProgressResult>();
+  for (const deckId of deckIds) {
+    result.set(deckId, computeDeckProgress(cardsByDeck.get(deckId) ?? []));
+  }
+  return result;
 }
 
 /**

@@ -10,9 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({ createClient: vi.fn() }));
 
 const { createClient } = await import("@/lib/supabase/server");
-const { getOwnedDecksWithCardCounts, getDeckDetail, listCardsForDeck, selectDeck } = await import(
-  "@/lib/decks/dal"
-);
+const { getOwnedDecksWithCardCounts, getDeckDetail, listCardsForDeck, getDeckProgressByDeck, selectDeck } =
+  await import("@/lib/decks/dal");
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -22,7 +21,7 @@ afterEach(() => {
 function makeChain(result: { data: unknown; error: unknown; count?: number }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const chain: Record<string, (...args: unknown[]) => unknown> = {};
-  const methods = ["select", "eq", "is", "order", "limit"];
+  const methods = ["select", "eq", "is", "in", "order", "limit"];
   for (const method of methods) {
     chain[method] = (...args: unknown[]) => {
       calls.push({ method, args });
@@ -184,9 +183,14 @@ describe("listCardsForDeck", () => {
     expect(chain.calls).toContainEqual({ method: "order", args: ["sort_order", { ascending: true }] });
   });
 
-  it("returns front/back cards with each card's own cardStatus (defaulting to NEW when no progress row exists)", async () => {
+  it("returns front/back cards with each card's own cardStatus and learningStage (defaulting to NEW/null when no progress row exists)", async () => {
     const rows = [
-      { id: "card-1", front: "abundant", back: "豊富な", user_card_progress: [{ card_status: "LEARNING" }] },
+      {
+        id: "card-1",
+        front: "abundant",
+        back: "豊富な",
+        user_card_progress: [{ card_status: "LEARNING", learning_stage: "FRESH" }],
+      },
       { id: "card-2", front: "ambiguous", back: "曖昧な", user_card_progress: [] },
     ];
     const chain = makeChain({ data: rows, error: null });
@@ -194,8 +198,8 @@ describe("listCardsForDeck", () => {
     vi.mocked(createClient).mockResolvedValue({ from } as never);
 
     await expect(listCardsForDeck("deck-1")).resolves.toEqual([
-      { id: "card-1", front: "abundant", back: "豊富な", cardStatus: "LEARNING" },
-      { id: "card-2", front: "ambiguous", back: "曖昧な", cardStatus: "NEW" },
+      { id: "card-1", front: "abundant", back: "豊富な", cardStatus: "LEARNING", learningStage: "FRESH" },
+      { id: "card-2", front: "ambiguous", back: "曖昧な", cardStatus: "NEW", learningStage: null },
     ]);
   });
 
@@ -205,6 +209,48 @@ describe("listCardsForDeck", () => {
     vi.mocked(createClient).mockResolvedValue({ from } as never);
 
     await expect(listCardsForDeck("deck-1")).resolves.toEqual([]);
+  });
+});
+
+describe("getDeckProgressByDeck", () => {
+  it("returns an empty map with no query at all for an empty deckIds list", async () => {
+    const from = vi.fn();
+    vi.mocked(createClient).mockResolvedValue({ from } as never);
+
+    await expect(getDeckProgressByDeck([])).resolves.toEqual(new Map());
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("issues exactly one query for any number of deck ids, grouping each card by its own deck_id", async () => {
+    const rows = [
+      { deck_id: "deck-1", user_card_progress: [{ card_status: "LEARNED", learning_stage: null }] },
+      { deck_id: "deck-1", user_card_progress: [] },
+      { deck_id: "deck-2", user_card_progress: [{ card_status: "LEARNING", learning_stage: "FRESH" }] },
+    ];
+    const chain = makeChain({ data: rows, error: null });
+    const from = vi.fn().mockReturnValue(chain.chain);
+    vi.mocked(createClient).mockResolvedValue({ from } as never);
+
+    const result = await getDeckProgressByDeck(["deck-1", "deck-2"]);
+
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith("cards");
+    expect(chain.calls).toContainEqual({ method: "in", args: ["deck_id", ["deck-1", "deck-2"]] });
+    expect(chain.calls).toContainEqual({ method: "is", args: ["deleted_at", null] });
+    // deck-1: LEARNED (1.00) + NEW (0.00) averaged over 2 cards = 0.50.
+    expect(result.get("deck-1")).toEqual({ kind: "ok", progress: 0.5 });
+    // deck-2: LEARNING+FRESH (0.10) over 1 card.
+    expect(result.get("deck-2")).toEqual({ kind: "ok", progress: 0.1 });
+  });
+
+  it("returns 'empty' for a requested deck id with no live cards at all", async () => {
+    const chain = makeChain({ data: [], error: null });
+    const from = vi.fn().mockReturnValue(chain.chain);
+    vi.mocked(createClient).mockResolvedValue({ from } as never);
+
+    const result = await getDeckProgressByDeck(["deck-1"]);
+
+    expect(result.get("deck-1")).toEqual({ kind: "empty" });
   });
 });
 

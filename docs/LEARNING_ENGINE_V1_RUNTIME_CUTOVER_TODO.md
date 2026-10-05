@@ -64,8 +64,31 @@ by anything that exists today.
   to prevent a future v1 cutover from regressing that behavior, not
   because a discrepancy exists today.
 
-## Deck Progress live rendering (Phase 9 decision)
+## Deck Progress live rendering -- CLOSED (RC-E)
 
+- Runtime Cutover RC-E wired `computeDeckProgress()` live, gated on v1
+  rollout enrollment (`learning_engine_v1_rollout` existing for the
+  caller, read via `lib/learning-engine/progress/dal.ts`'s
+  `isCurrentUserEnrolledInLearningEngineV1()`) -- never for a
+  not-yet-enrolled legacy user, who continues to see only the
+  authoritative Mastered count, matching this section's own "no legacy
+  approximation anywhere in the read path" requirement below.
+- Enrollment itself already normalizes every one of a user's
+  `user_card_progress` rows (including soft-deleted cards', per
+  `lib/learning-engine/cutover/prepare-normalization.ts`'s
+  `readLegacyCardRowsForNormalization()`, which applies no
+  `cards.deleted_at` filter) to a v1-valid `card_status`/`learning_stage`
+  shape before any rollout row commits -- so the `incomplete` gap this
+  section describes below can no longer occur for an enrolled user's live
+  cards; `classifyDeckProgressState()`'s `incomplete` result remains in
+  place as the data-authoritativeness guard, now simply never triggered
+  in practice for a correctly-enrolled user.
+- Wired into: Deck Detail (`app/decks/[deckId]/page.tsx`), the Decks list
+  (`app/decks/page.tsx`/`deck-row.tsx`, one batched
+  `getDeckProgressByDeck()` query for every owned deck -- never one query
+  per row), and Home's Session Context card (`app/page.tsx`/
+  `session-context-card.tsx`, the one selected deck only). Presentation:
+  `app/decks/deck-progress-bar.tsx`.
 - Deck Progress's metric *definition* is complete and fully unit-tested as
   of Phase 9: `lib/learning-engine/progress/deck-progress.ts`
   (`classifyDeckProgressState`, `cardProgressContribution`,
@@ -96,8 +119,21 @@ by anything that exists today.
   UI without changing their semantics -- do not re-derive the formula or
   contribution table a second time.
 
-## Mastery notification live triggers (Phase 9 decision)
+## Mastery notification live triggers -- CLOSED (RC-E)
 
+- Runtime Cutover RC-E wired both toasts into
+  `app/session/session-screen.tsx`'s `handleGrade()`, exactly as this
+  section anticipated: scheduled from the authoritative
+  `cardMasteredJustNow`/`fullMasteryJustAchieved` result fields RC-D
+  already plumbed through `submitAnswerForEngine()` (never inferred
+  client-side), gated on `!data.isReplay` so a genuine
+  same-`client_event_id` replay never re-shows a transient toast for a
+  historically-true flag. Both can fire on the same answer (the final
+  card of a deck both masters itself and completes the deck) -- each has
+  its own independent fx slot and fixed vertical position in
+  `app/session/battle-scene.tsx` (alongside the existing Daily Goal
+  badge), so neither suppresses the other and neither blocks
+  `refetchCard()`.
 - `lib/learning-engine/progress/notifications.ts`
   (`shouldShowCardMasteredToast`, `shouldShowFullMasteryToast`) and their
   presentation components (`app/session/mastery-toast.tsx`'s

@@ -1,5 +1,7 @@
 import Link from "next/link";
+import type { DeckProgressResult } from "@/lib/learning-engine/progress/deck-progress";
 import { SelectDeckButton } from "./select-deck-button";
+import { DeckProgressBar } from "./deck-progress-bar";
 
 /**
  * One Deck card (P3 Decks section 4/5): name + real card count + a clear
@@ -14,12 +16,15 @@ export function DeckRow({
   name,
   cardCount,
   masteredCount,
+  deckProgress,
   selected,
 }: {
   readonly deckId: string;
   readonly name: string;
   readonly cardCount: number;
   readonly masteredCount: number;
+  /** Runtime Cutover RC-E: null for a not-enrolled-in-v1 caller -- DeckProgressBar renders nothing in that case, leaving the Mastered count above as the only progress signal, unchanged. */
+  readonly deckProgress: DeckProgressResult | null;
   readonly selected: boolean;
 }) {
   return (
@@ -33,6 +38,7 @@ export function DeckRow({
         <p className="text-xs text-emerald-100/70">
           {cardCount} {cardCount === 1 ? "card" : "cards"} · {masteredCount} Mastered
         </p>
+        <DeckProgressBar result={deckProgress} />
       </Link>
 
       {selected ? (

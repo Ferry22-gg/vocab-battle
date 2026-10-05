@@ -70,6 +70,25 @@ export const RC_D_V1_SMOKE_TESTER = tester("807");
 // completely unchanged.
 export const RC_D_LEGACY_SMOKE_TESTER = tester("808");
 
+// Learning Engine v1 Runtime Cutover RC-E browser smoke test: enrolled in
+// the v1 rollout (by the test itself, AFTER onboarding creates their
+// deck) -- drives live Deck Progress rendering with known seeded
+// per-card state.
+export const RC_E_V1_SMOKE_TESTER = tester("809");
+
+// RC-E browser smoke test: never enrolled -- proves Deck Progress stays
+// absent (authoritative Mastered count only) for a legacy user.
+export const RC_E_LEGACY_SMOKE_TESTER = tester("810");
+
+// RC-E mastery-notification acceptance test: first-time Card Mastered
+// through the real v1 FSRS_DUE path (own dedicated custom deck, never the
+// official starter templates).
+export const RC_E_MASTERY_SINGLE_TESTER = tester("811");
+
+// RC-E mastery-notification acceptance test: simultaneous final-card Card
+// Mastered + Full Mastery through the real v1 FSRS_DUE path.
+export const RC_E_MASTERY_SIMULTANEOUS_TESTER = tester("812");
+
 // Auth user only -- deliberately no matching profiles row (scenario G).
 export const MISSING_PROFILE_USER = {
   publicUserId: "806",
@@ -85,6 +104,10 @@ export const PROFILE_FIXTURES: ProfileFixture[] = [
   ADMIN,
   RC_D_V1_SMOKE_TESTER,
   RC_D_LEGACY_SMOKE_TESTER,
+  RC_E_V1_SMOKE_TESTER,
+  RC_E_LEGACY_SMOKE_TESTER,
+  RC_E_MASTERY_SINGLE_TESTER,
+  RC_E_MASTERY_SIMULTANEOUS_TESTER,
 ];
 
 export const ALL_E2E_PUBLIC_USER_IDS = [

@@ -7,22 +7,34 @@
  * dismissal, auto-fades via the same shared `vb-toast-fade` keyframe
  * (app/globals.css), respecting `reducedMotion`.
  *
- * NOT WIRED YET. Nothing in app/session/session-screen.tsx imports or
- * renders either component below -- see
- * lib/learning-engine/progress/notifications.ts's module header for the
- * exact live-trigger gap this is waiting on. When that trigger exists,
- * wire these in the same way DailyGoalFx is wired: hold a `{ key, ... } |
- * null` fx state in session-screen.tsx, schedule it in handleGrade() when
- * shouldShowCardMasteredToast()/shouldShowFullMasteryToast() returns true
- * for that answer's before/after state, and clear it after its own
- * duration via the existing scheduleFx() helper.
+ * Runtime Cutover RC-E: wired into app/session/battle-scene.tsx, scheduled
+ * from app/session/session-screen.tsx's handleGrade() exactly the way
+ * DailyGoalFx already is -- see this module's own `style` prop doc below
+ * for why a plain `top-1` Tailwind class alone is no longer enough.
  */
 
-export function CardMasteredToast({ reducedMotion }: { readonly reducedMotion: boolean }) {
+import type { CSSProperties } from "react";
+
+/**
+ * Optional top-offset override, in addition to (not instead of) this
+ * component's own default `top-1` position -- battle-scene.tsx passes one
+ * whenever more than one top badge (Daily Goal / Card Mastered / Full
+ * Mastery) can be visible at once (spec section 15/25.1's simultaneous
+ * "final card triggers both" case), so the two never render on top of
+ * each other. `undefined` (the default) reproduces this component's
+ * original single-badge position exactly.
+ */
+interface MasteryToastProps {
+  readonly reducedMotion: boolean;
+  readonly style?: CSSProperties;
+}
+
+export function CardMasteredToast({ reducedMotion, style }: MasteryToastProps) {
   return (
     <div
       role="status"
       aria-live="polite"
+      style={style}
       className={
         "pointer-events-none absolute top-1 z-10 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800 shadow-sm dark:bg-emerald-900/60 dark:text-emerald-200" +
         (reducedMotion ? "" : " animate-[vb-toast-fade_2200ms_ease-in-out_forwards]")
@@ -33,11 +45,12 @@ export function CardMasteredToast({ reducedMotion }: { readonly reducedMotion: b
   );
 }
 
-export function FullMasteryToast({ reducedMotion }: { readonly reducedMotion: boolean }) {
+export function FullMasteryToast({ reducedMotion, style }: MasteryToastProps) {
   return (
     <div
       role="status"
       aria-live="polite"
+      style={style}
       className={
         "pointer-events-none absolute top-1 z-10 rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800 shadow-sm dark:bg-amber-900/60 dark:text-amber-200" +
         (reducedMotion ? "" : " animate-[vb-toast-fade_2200ms_ease-in-out_forwards]")

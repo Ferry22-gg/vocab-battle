@@ -1,5 +1,6 @@
 import { requireOnboardedTester } from "@/lib/auth/dal";
-import { getOwnedDecksWithCardCounts } from "@/lib/decks/dal";
+import { getOwnedDecksWithCardCounts, getDeckProgressByDeck } from "@/lib/decks/dal";
+import { isCurrentUserEnrolledInLearningEngineV1 } from "@/lib/learning-engine/progress/dal";
 import { BottomNav } from "@/app/home/bottom-nav";
 import { DeckRow } from "./deck-row";
 
@@ -16,7 +17,16 @@ import { DeckRow } from "./deck-row";
  */
 export default async function DecksPage() {
   const tester = await requireOnboardedTester();
-  const decks = await getOwnedDecksWithCardCounts();
+  const [decks, enrolledInV1] = await Promise.all([
+    getOwnedDecksWithCardCounts(),
+    isCurrentUserEnrolledInLearningEngineV1(),
+  ]);
+  // Runtime Cutover RC-E: one batched query for every owned deck
+  // (getDeckProgressByDeck's own doc comment) -- never one query per row,
+  // and never computed at all for a legacy (not-yet-enrolled) user.
+  const deckProgress = enrolledInV1
+    ? await getDeckProgressByDeck(decks.map((deck) => deck.id))
+    : null;
 
   const selectedDeck = decks.find((deck) => deck.id === tester.selectedDeckId) ?? null;
   const otherDecks = decks.filter((deck) => deck.id !== tester.selectedDeckId);
@@ -34,6 +44,7 @@ export default async function DecksPage() {
               name={selectedDeck.name}
               cardCount={selectedDeck.cardCount}
               masteredCount={selectedDeck.masteredCount}
+              deckProgress={deckProgress?.get(selectedDeck.id) ?? null}
               selected
             />
           </section>
@@ -52,6 +63,7 @@ export default async function DecksPage() {
                   name={deck.name}
                   cardCount={deck.cardCount}
                   masteredCount={deck.masteredCount}
+                  deckProgress={deckProgress?.get(deck.id) ?? null}
                   selected={false}
                 />
               ))}

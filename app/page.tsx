@@ -1,8 +1,10 @@
 import { requireOnboardedTester } from "@/lib/auth/dal";
-import { getDeckById, getMasteredCountsByDeck } from "@/lib/decks/dal";
+import { getDeckById, getMasteredCountsByDeck, listCardsForDeck } from "@/lib/decks/dal";
 import { getProfileStats } from "@/lib/profile/dal";
 import { getTodayDailyGoalProgress } from "@/lib/learning/daily-goal-dal";
 import { getActiveSessionForCurrentUser } from "@/lib/sessions/dal";
+import { computeDeckProgress, type DeckProgressResult } from "@/lib/learning-engine/progress/deck-progress";
+import { isCurrentUserEnrolledInLearningEngineV1 } from "@/lib/learning-engine/progress/dal";
 import { WorldBackground } from "@/app/home/world-background";
 import { HomeHeader } from "@/app/home/home-header";
 import { SessionHero } from "@/app/home/session-hero";
@@ -23,18 +25,30 @@ import { BottomNav } from "@/app/home/bottom-nav";
 export default async function HomePage() {
   const tester = await requireOnboardedTester();
 
-  const [deck, masteredCounts, profileStats, dailyGoal, activeSession] = await Promise.all([
-    // selectedDeckId is guaranteed set by the guard above, but the deck row
-    // itself is supplementary display info -- if loading it fails, show the
-    // rest of Home rather than taking down the whole page over it.
-    tester.selectedDeckId ? getDeckById(tester.selectedDeckId).catch(() => null) : Promise.resolve(null),
-    getMasteredCountsByDeck(),
-    getProfileStats(),
-    getTodayDailyGoalProgress(),
-    // Read-only: never starts or resumes a session just by rendering Home.
-    getActiveSessionForCurrentUser(),
-  ]);
+  const [deck, masteredCounts, profileStats, dailyGoal, activeSession, enrolledInV1, selectedDeckCards] =
+    await Promise.all([
+      // selectedDeckId is guaranteed set by the guard above, but the deck row
+      // itself is supplementary display info -- if loading it fails, show the
+      // rest of Home rather than taking down the whole page over it.
+      tester.selectedDeckId ? getDeckById(tester.selectedDeckId).catch(() => null) : Promise.resolve(null),
+      getMasteredCountsByDeck(),
+      getProfileStats(),
+      getTodayDailyGoalProgress(),
+      // Read-only: never starts or resumes a session just by rendering Home.
+      getActiveSessionForCurrentUser(),
+      isCurrentUserEnrolledInLearningEngineV1(),
+      // Runtime Cutover RC-E: Home only ever needs the one selected deck's
+      // cards (never every owned deck), so this stays a single cheap query
+      // -- no N+1 risk the way a full Deck list would have.
+      tester.selectedDeckId ? listCardsForDeck(tester.selectedDeckId) : Promise.resolve([]),
+    ]);
   const masteredCount = tester.selectedDeckId ? (masteredCounts.get(tester.selectedDeckId) ?? 0) : 0;
+  const deckProgress: DeckProgressResult | null =
+    tester.selectedDeckId && enrolledInV1
+      ? computeDeckProgress(
+          selectedDeckCards.map((card) => ({ cardStatus: card.cardStatus, learningStage: card.learningStage })),
+        )
+      : null;
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden bg-emerald-950">
@@ -52,7 +66,7 @@ export default async function HomePage() {
 
         <div className="flex flex-col gap-3 px-4 pb-[calc(env(safe-area-inset-bottom,0px)+114px)]">
           <DailyGoalCard enemiesDefeated={dailyGoal.enemiesDefeated} completed={dailyGoal.completed} />
-          <SessionContextCard deckName={deck?.name ?? null} masteredCount={masteredCount} />
+          <SessionContextCard deckName={deck?.name ?? null} masteredCount={masteredCount} deckProgress={deckProgress} />
         </div>
       </div>
 

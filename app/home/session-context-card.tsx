@@ -1,4 +1,6 @@
 import Image from "next/image";
+import type { DeckProgressResult } from "@/lib/learning-engine/progress/deck-progress";
+import { DeckProgressBar } from "@/app/decks/deck-progress-bar";
 
 /**
  * Session Context card (P3 spec section 8): World + selected Deck as ONE
@@ -24,13 +26,16 @@ import Image from "next/image";
 export function SessionContextCard({
   deckName,
   masteredCount,
+  deckProgress,
 }: {
   readonly deckName: string | null;
   /** Current (not historical) Mastered count for this deck (spec section 28.1) -- omitted entirely when no deck is selected. */
   readonly masteredCount: number;
+  /** Runtime Cutover RC-E: null whenever no deck is selected OR the caller is not enrolled in Learning Engine v1 -- DeckProgressBar renders nothing in that case, leaving the Mastered count above as the only progress signal, unchanged (spec/TODO "Deck Progress live rendering"). */
+  readonly deckProgress: DeckProgressResult | null;
 }) {
   return (
-    <div className="relative flex h-28 overflow-hidden rounded-2xl border border-white/10 bg-emerald-950/80 shadow-md">
+    <div className="relative flex min-h-28 overflow-hidden rounded-2xl border border-white/10 bg-emerald-950/80 shadow-md">
       <div className="relative w-[34%] shrink-0" aria-hidden="true">
         <Image
           src="/worlds/forest/background.png"
@@ -53,7 +58,10 @@ export function SessionContextCard({
           <span className="truncate text-base font-medium text-emerald-50">{deckName ?? "No deck selected"}</span>
         </div>
         {deckName !== null && (
-          <p className="truncate text-xs text-emerald-100/60">{masteredCount} Mastered</p>
+          <>
+            <p className="truncate text-xs text-emerald-100/60">{masteredCount} Mastered</p>
+            <DeckProgressBar result={deckProgress} />
+          </>
         )}
       </div>
 

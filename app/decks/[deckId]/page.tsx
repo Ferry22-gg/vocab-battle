@@ -3,8 +3,11 @@ import { notFound } from "next/navigation";
 import { requireOnboardedTester } from "@/lib/auth/dal";
 import { getDeckDetail, listCardsForDeck } from "@/lib/decks/dal";
 import { countMasteredCards } from "@/lib/learning-engine/progress/mastery";
+import { computeDeckProgress } from "@/lib/learning-engine/progress/deck-progress";
+import { isCurrentUserEnrolledInLearningEngineV1 } from "@/lib/learning-engine/progress/dal";
 import { SelectDeckButton } from "@/app/decks/select-deck-button";
 import { CardStatusBadge } from "@/app/decks/card-status-badge";
+import { DeckProgressBar } from "@/app/decks/deck-progress-bar";
 
 /**
  * Minimal P3 Deck detail screen (MVP_UI_SPEC.md section 11): a content
@@ -27,11 +30,21 @@ export default async function DeckDetailPage(props: PageProps<"/decks/[deckId]">
     notFound();
   }
 
-  const cards = await listCardsForDeck(deckId);
+  const [cards, enrolledInV1] = await Promise.all([
+    listCardsForDeck(deckId),
+    isCurrentUserEnrolledInLearningEngineV1(),
+  ]);
   // Derived from the same query above, not a second DAL round trip -- see
   // getMasteredCountsByDeck()'s doc comment (lib/decks/dal.ts) for why
   // `user_deck_learning_state.mastered_count` is never read for this.
   const masteredCount = countMasteredCards(cards.map((card) => card.cardStatus));
+  // Runtime Cutover RC-E: live Deck Progress is enrolled-v1-only (spec/TODO
+  // "Deck Progress live rendering") -- a legacy user keeps seeing only the
+  // authoritative Mastered count above, never an approximated percentage.
+  // Reuses the exact same `cards` read above -- no second query.
+  const deckProgress = enrolledInV1
+    ? computeDeckProgress(cards.map((card) => ({ cardStatus: card.cardStatus, learningStage: card.learningStage })))
+    : null;
   const selected = deck.id === tester.selectedDeckId;
   // Only the caller's own decks can ever be selected (select_deck() only
   // succeeds for a deck the caller owns, DATABASE_SCHEMA.md 10.8) -- an
@@ -52,6 +65,8 @@ export default async function DeckDetailPage(props: PageProps<"/decks/[deckId]">
           <p className="mt-2 text-xs text-emerald-100/60">
             {deck.cardCount} {deck.cardCount === 1 ? "card" : "cards"} · {masteredCount} Mastered
           </p>
+
+          <DeckProgressBar result={deckProgress} />
 
           <div className="mt-3">
             {selected ? (
