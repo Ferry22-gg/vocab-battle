@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { loginAs, expectPath } from "../helpers";
+import { loginAs, expectPath, getFormAlert } from "../helpers";
 import { DUPLICATE_NICKNAME_TESTER, NICKNAME_HOLDER } from "../fixtures/identities";
 import { getProfileByPublicUserId } from "../db-assertions";
 
@@ -20,7 +20,7 @@ test("case-insensitive duplicate nickname shows a friendly error, doesn't persis
   await page.getByLabel("Nickname").fill(collidingNickname);
   await page.getByRole("button", { name: /continue/i }).click();
 
-  await expect(page.getByRole("alert")).toHaveText(
+  await expect(getFormAlert(page)).toHaveText(
     "That nickname is taken. Please choose another."
   );
   // Still on the nickname form -- did not advance to /onboarding/deck.

@@ -33,9 +33,11 @@ import "server-only";
  * Every OTHER rejection (ownership mismatch, a non-OPEN claim, a deleted
  * card, etc.) propagates immediately, unretried.
  *
- * Isolation: not imported by app/session/*, app/actions/answers.ts, or
- * any live Server Action. This is the primitive a future RC-D is expected
- * to call, not a live code path today.
+ * Wiring (RC-D, reconfirmed RC-F): called live from
+ * app/actions/answers.ts via lib/learning/engine-router.ts's
+ * `submitAnswerForEngine`, which routes a v1 session's answer here and a
+ * legacy session's answer to lib/learning/submit-answer.ts instead -- by
+ * the session's own pinned engine_version, never client-chosen.
  */
 
 import { prepareLearningEngineAnswer, type RandomSource } from "@/lib/learning-engine/runtime/prepare-answer";

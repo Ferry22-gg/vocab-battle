@@ -118,27 +118,26 @@ export interface ReviewEventIdentity {
  *     only ever passes them through unchanged from `position` below, it
  *     never derives or increments either.
  *
- * RUNTIME-CUTOVER ACCEPTANCE REQUIREMENT for `sessionPosition` (tracked
- * here, not yet enforced -- Phase 8 builds persistence capability only):
- * `schedulerPosition`/`schedulerRevision` already get a real cross-check
- * today -- `insert_learning_engine_review_event`
+ * RUNTIME-CUTOVER ACCEPTANCE REQUIREMENT for `sessionPosition` -- CLOSED
+ * (RC-C, confirmed RC-F): `schedulerPosition`/`schedulerRevision` get a
+ * real cross-check today -- `insert_learning_engine_review_event`
  * (supabase/migrations/20261005000000_learning_engine_v1_telemetry_functions.sql)
  * rejects (42501) a review event whose `scheduler_position`/
  * `scheduler_revision` disagree with its linked `SelectionTrace`.
- * `sessionPosition` has NO equivalent check anywhere today -- this
- * builder (and the trusted SQL insert function) accept whatever value
- * the trusted caller supplies, with no independent verification against
- * live session state. This is acceptable for Phase 8 (no live caller
- * exists yet; only tests construct this value), but a future runtime-
- * cutover phase MUST NOT carry that trust forward unexamined: for every
- * v1 answer event, `answer_events.session_position` must be made to
- * equal the authoritative question position in the live `sessions` row
- * that produced the answer (the same kind of server-derived-only value
- * `userId` already is in lib/learning/commit-answer.ts, never a bare
- * client-supplied number) -- not trusted from arbitrary client
- * telemetry. Add that verification to whatever trusted commit/claim
- * transaction Phase 9/cutover introduces; do not assume this module's
- * current passthrough already provides it.
+ * `sessionPosition` has no equivalent cross-check, by design: RC-C's live
+ * caller (lib/learning-engine/runtime/commit-answer.ts) never accepts it
+ * from the trusted caller as an independent value in the first place --
+ * it sets `sessionPosition: context.session.totalAnswersBefore + 1`,
+ * where `totalAnswersBefore` is `v_session.total_answers` read from the
+ * locked `sessions` row inside the same trusted transaction
+ * (20261013000000_learning_engine_v1_runtime_cutover_rc_c_answer_commit.sql).
+ * There is nothing to cross-check because this builder's own caller never
+ * passes a client-supplied `sessionPosition` through to begin with -- the
+ * same server-derived-only treatment `userId` already gets in
+ * lib/learning/commit-answer.ts. This module's own `position` parameter
+ * type still accepts a bare number (so tests can still construct
+ * arbitrary `ReviewEventPosition` values directly), but the one live
+ * caller never sources that number from a client.
  *
  * `schedulerPosition` here stays the PRE-answer SelectionTrace echo even
  * after the RC-C `cardsSinceLastSeen` fix below -- see this module's

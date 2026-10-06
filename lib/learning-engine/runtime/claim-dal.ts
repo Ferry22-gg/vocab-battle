@@ -14,8 +14,10 @@ import "server-only";
  * snapshot-mapper/chooseNextCard()/orchestrator layers. Uses ONLY
  * getServiceRoleClient() -- neither RPC has any grant for `authenticated`.
  *
- * Not called from any live application code path -- only from
- * lib/learning-engine/runtime/claim-next-card.ts and tests.
+ * Wiring (RC-D, reconfirmed RC-F): claim-next-card.ts's
+ * `claimNextLearningEngineCard` (this module's own caller) is itself
+ * called live from app/actions/sessions.ts via
+ * lib/learning/engine-router.ts -- not merely from tests.
  */
 
 import { getServiceRoleClient } from "@/lib/supabase/service-role";

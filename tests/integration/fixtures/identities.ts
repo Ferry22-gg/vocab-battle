@@ -52,6 +52,7 @@ export const RC_C_ANSWER_TESTER_C = tester("922"); // Learning Engine v1 Runtime
 export const RC_C_ANSWER_TESTER_D = tester("923"); // Learning Engine v1 Runtime Cutover RC-C: full account deletion of a one-way-zone user
 export const RC_D_V1_ROUTING_TESTER = tester("924"); // Learning Engine v1 Runtime Cutover RC-D: enrolled user, full live v1 routing flow
 export const RC_D_LEGACY_ROUTING_TESTER = tester("925"); // Learning Engine v1 Runtime Cutover RC-D: never-enrolled user, legacy routing stays unchanged
+export const RC_F_CROSS_SESSION_POSITION_TESTER = tester("926"); // Runtime Cutover RC-F acceptance: deck-global scheduler_position continuity across a real finish-then-resume Session boundary, vs. Session-local session_position restarting
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -79,6 +80,7 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   RC_C_ANSWER_TESTER_D,
   RC_D_V1_ROUTING_TESTER,
   RC_D_LEGACY_ROUTING_TESTER,
+  RC_F_CROSS_SESSION_POSITION_TESTER,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;
