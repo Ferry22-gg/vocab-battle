@@ -22,12 +22,15 @@ import {
   type DeckProgressResult,
 } from "@/lib/learning-engine/progress/deck-progress";
 
-const STARTER_DECK_COLUMNS = "id, name, description";
+const STARTER_DECK_COLUMNS = "id, name, description, front_language, back_language";
 
 export type StarterDeck = {
   id: string;
   name: string;
   description: string | null;
+  /** Plain, unconstrained text (no DB enum) -- presentation-only metadata, e.g. lib/session-ui/language-labels.ts's display-name lookup. Never Learning Engine policy. */
+  front_language: string;
+  back_language: string;
 };
 
 export const getStarterDecks = cache(async (): Promise<StarterDeck[]> => {

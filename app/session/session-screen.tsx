@@ -72,9 +72,14 @@ const MASTERY_FX_MS = 2200;
 export function SessionScreen({
   sessionId,
   initialCard,
+  frontLanguageLabel,
+  backLanguageLabel,
 }: {
   readonly sessionId: string;
   readonly initialCard: NextSessionCard;
+  /** Presentation-only flashcard eyebrow labels derived from the deck's front_language/back_language (e.g. "Swahili" / "English") -- never Learning Engine state. */
+  readonly frontLanguageLabel: string;
+  readonly backLanguageLabel: string;
 }) {
   const [cardState, setCardState] = useState<SessionCardUiState>(() => toSessionCardUiState(initialCard));
   const [guardState, dispatchGuard] = useReducer(revealGuardReducer, initialRevealGuardState);
@@ -307,6 +312,8 @@ export function SessionScreen({
             <FlashCard
               front={cardState.card.front}
               back={cardState.card.back}
+              frontLabel={frontLanguageLabel}
+              backLabel={backLanguageLabel}
               revealed={guardState.phase !== "idle"}
               reducedMotion={reducedMotion}
               onFlipDone={handleFlipDone}

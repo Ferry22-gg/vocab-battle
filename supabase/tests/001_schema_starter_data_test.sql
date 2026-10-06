@@ -11,30 +11,32 @@
 -- irrelevant here, this only asserts what data exists.
 
 BEGIN;
-SELECT plan(10);
+SELECT plan(13);
 
--- exactly 2 official template decks
+-- exactly 3 official template decks (the two original TOEFL decks plus
+-- Swahili Basics, added by 20261022000000_swahili_basics_starter_deck.sql
+-- -- purely additive, never replacing or renaming either original deck)
 SELECT is(
   (SELECT count(*)::int FROM public.decks WHERE is_official = true),
-  2,
-  'exactly 2 official decks exist'
+  3,
+  'exactly 3 official decks exist'
 );
 
 -- each is_template = true
 SELECT is(
   (SELECT count(*)::int FROM public.decks WHERE is_official = true AND is_template = true),
-  2,
+  3,
   'every official deck has is_template = true'
 );
 
 -- each owner_user_id = NULL
 SELECT is(
   (SELECT count(*)::int FROM public.decks WHERE is_official = true AND owner_user_id IS NULL),
-  2,
+  3,
   'every official deck has owner_user_id = NULL'
 );
 
--- exactly 100 cards per official deck
+-- exactly 100 cards per official TOEFL deck (unchanged by the Swahili addition)
 SELECT is(
   (SELECT count(*)::int FROM public.cards c
      JOIN public.decks d ON d.id = c.deck_id
@@ -51,13 +53,35 @@ SELECT is(
   'Advanced English Vocabulary II has exactly 100 cards'
 );
 
--- 200 official cards total
+-- exactly 60 cards for the new Swahili Basics deck
+SELECT is(
+  (SELECT count(*)::int FROM public.cards c
+     JOIN public.decks d ON d.id = c.deck_id
+    WHERE d.name = 'Swahili Basics' AND d.is_official = true),
+  60,
+  'Swahili Basics has exactly 60 cards'
+);
+
+-- Swahili Basics direction: sw -> en (the two TOEFL decks remain en -> ja, unasserted here, unchanged)
+SELECT is(
+  (SELECT front_language FROM public.decks WHERE name = 'Swahili Basics' AND is_official = true),
+  'sw',
+  'Swahili Basics has front_language = sw'
+);
+
+SELECT is(
+  (SELECT back_language FROM public.decks WHERE name = 'Swahili Basics' AND is_official = true),
+  'en',
+  'Swahili Basics has back_language = en'
+);
+
+-- 260 official cards total (200 original + 60 Swahili)
 SELECT is(
   (SELECT count(*)::int FROM public.cards c
      JOIN public.decks d ON d.id = c.deck_id
     WHERE d.is_official = true),
-  200,
-  '200 official cards total across both decks'
+  260,
+  '260 official cards total across all three decks'
 );
 
 -- official cards have created_by_user_id = NULL
@@ -91,8 +115,9 @@ SELECT is(
 -- deck names resolve via tests.official_deck_id() (used by every other test file)
 SELECT ok(
   tests.official_deck_id('Advanced English Vocabulary I') IS NOT NULL
-  AND tests.official_deck_id('Advanced English Vocabulary II') IS NOT NULL,
-  'tests.official_deck_id() resolves both official deck names'
+  AND tests.official_deck_id('Advanced English Vocabulary II') IS NOT NULL
+  AND tests.official_deck_id('Swahili Basics') IS NOT NULL,
+  'tests.official_deck_id() resolves all three official deck names'
 );
 
 SELECT * FROM finish();

@@ -54,12 +54,17 @@ const REDUCED_MOTION_DURATION_MS = 150;
 export function FlashCard({
   front,
   back,
+  frontLabel,
+  backLabel,
   revealed,
   reducedMotion,
   onFlipDone,
 }: {
   readonly front: string;
   readonly back: string;
+  /** The front/back face's eyebrow label (e.g. "Swahili" / "English"), derived from the deck's own front_language/back_language -- never hardcoded here, so this component works for any deck language pair. */
+  readonly frontLabel: string;
+  readonly backLabel: string;
   readonly revealed: boolean;
   readonly reducedMotion: boolean;
   readonly onFlipDone: () => void;
@@ -100,7 +105,7 @@ export function FlashCard({
         }
       >
         <CardFace
-          eyebrow="English"
+          eyebrow={frontLabel}
           text={front}
           style={
             reducedMotion
@@ -109,7 +114,7 @@ export function FlashCard({
           }
         />
         <CardFace
-          eyebrow="Japanese"
+          eyebrow={backLabel}
           text={back}
           style={
             reducedMotion

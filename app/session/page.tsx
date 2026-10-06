@@ -1,6 +1,8 @@
 import { requireOnboardedTester } from "@/lib/auth/dal";
 import { startOrResumeSession } from "@/lib/sessions/dal";
 import { getNextSessionCardForEngine } from "@/lib/learning/engine-router";
+import { getDeckById } from "@/lib/decks/dal";
+import { getLanguageDisplayName } from "@/lib/session-ui/language-labels";
 import { SessionScreen } from "./session-screen";
 
 /**
@@ -28,5 +30,21 @@ export default async function SessionPage() {
   const session = await startOrResumeSession();
   const initialCard = await getNextSessionCardForEngine(tester.id, session.id);
 
-  return <SessionScreen sessionId={session.id} initialCard={initialCard} />;
+  // Presentation-only (flashcard eyebrow labels, e.g. "Swahili" / "English")
+  // -- never Learning Engine state. Falls back to generic labels rather
+  // than throwing if the deck row is ever unreachable (should not happen
+  // for an active session's own deck, but this screen must never fail to
+  // render over a label).
+  const deck = await getDeckById(session.deck_id);
+  const frontLanguageLabel = deck ? getLanguageDisplayName(deck.front_language) : "Front";
+  const backLanguageLabel = deck ? getLanguageDisplayName(deck.back_language) : "Back";
+
+  return (
+    <SessionScreen
+      sessionId={session.id}
+      initialCard={initialCard}
+      frontLanguageLabel={frontLanguageLabel}
+      backLanguageLabel={backLanguageLabel}
+    />
+  );
 }
