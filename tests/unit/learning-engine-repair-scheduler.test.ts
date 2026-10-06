@@ -15,7 +15,9 @@ import {
   resolveSpacedConfirmationWrong,
   sampleRepairGap,
   selectRepairCandidate,
+  selectRepairLivenessCandidate,
   type RepairObligation,
+  type RepairLivenessCardState,
 } from "@/lib/learning-engine/repair-scheduler";
 import {
   advanceActiveDrawCounters,
@@ -641,5 +643,85 @@ describe("isSpacedConfirmationDue -- the full relearning lifecycle (sections 9, 
     }
 
     expect(cards.find((c) => c.cardId === "relearning")?.activeDrawsSinceEligible).toBe(11); // untouched throughout
+  });
+});
+
+// =============================================================================
+// Repair liveness fallback (approved RC-F small-deck audit follow-up)
+// =============================================================================
+
+function livenessCard(overrides: Partial<RepairLivenessCardState>): RepairLivenessCardState {
+  return {
+    cardId: "card-1",
+    repairObligation: null,
+    relearningPhase: null,
+    correctCooldownUntilPosition: null,
+    ...overrides,
+  };
+}
+
+describe("selectRepairLivenessCandidate (direct unit coverage)", () => {
+  it("1. empty input -> null, never throws", () => {
+    expect(selectRepairLivenessCandidate([], 10, scriptedRandom([0.5]))).toBeNull();
+  });
+
+  it("2. no card is governed at all -> null (this selector never invents a candidate out of ordinary cards)", () => {
+    const ordinary = livenessCard({ cardId: "ordinary" });
+    expect(selectRepairLivenessCandidate([ordinary], 10, scriptedRandom([0.5]))).toBeNull();
+  });
+
+  it("3. a repair-pending card before its target -> selected, keyed on its own targetPosition", () => {
+    const obl = { cardId: "a", wrongPosition: 10, targetPosition: 14, hardCapPosition: 17 };
+    const card = livenessCard({ cardId: "a", repairObligation: obl });
+    const result = selectRepairLivenessCandidate([card], 11, scriptedRandom([0.5]));
+    expect(result).toEqual({ cardId: "a", normalEligiblePosition: 14 });
+  });
+
+  it("4. a repair-pending card whose target has ALREADY been reached is excluded (defense-in-depth -- it is already an ordinary repair_target candidate)", () => {
+    const obl = { cardId: "a", wrongPosition: 10, targetPosition: 14, hardCapPosition: 17 };
+    const card = livenessCard({ cardId: "a", repairObligation: obl });
+    expect(selectRepairLivenessCandidate([card], 14, scriptedRandom([0.5]))).toBeNull();
+  });
+
+  it("5. a repair-pending card whose hard cap has ALREADY been reached is excluded (defense-in-depth -- it is already a GLOBAL interrupt)", () => {
+    const obl = { cardId: "a", wrongPosition: 10, targetPosition: 14, hardCapPosition: 17 };
+    const card = livenessCard({ cardId: "a", repairObligation: obl });
+    expect(selectRepairLivenessCandidate([card], 17, scriptedRandom([0.5]))).toBeNull();
+  });
+
+  it("6. a SPACED_CONFIRMATION_PENDING card before its gate -> selected, keyed on correctCooldownUntilPosition, no repairObligation involved", () => {
+    const card = livenessCard({ cardId: "s", relearningPhase: "SPACED_CONFIRMATION_PENDING", correctCooldownUntilPosition: 50 });
+    const result = selectRepairLivenessCandidate([card], 10, scriptedRandom([0.5]));
+    expect(result).toEqual({ cardId: "s", normalEligiblePosition: 50 });
+  });
+
+  it("7. a SPACED_CONFIRMATION_PENDING card whose gate has ALREADY opened is excluded (defense-in-depth -- it is already an ordinary spaced_confirmation candidate)", () => {
+    const card = livenessCard({ cardId: "s", relearningPhase: "SPACED_CONFIRMATION_PENDING", correctCooldownUntilPosition: 50 });
+    expect(selectRepairLivenessCandidate([card], 50, scriptedRandom([0.5]))).toBeNull();
+  });
+
+  it("8. among several governed cards, the SOONEST normalEligiblePosition wins -- not oldest wrongPosition, which is a different rule (selectRepairCandidate)", () => {
+    const soonest = livenessCard({ cardId: "soonest", repairObligation: { cardId: "soonest", wrongPosition: 20, targetPosition: 24, hardCapPosition: 27 } });
+    const later = livenessCard({ cardId: "later", repairObligation: { cardId: "later", wrongPosition: 10, targetPosition: 30, hardCapPosition: 17 } });
+    // "later" has the OLDER wrongPosition (10 < 20) but the LATER target (30 > 24) -- proving this
+    // selector keys on targetPosition, deliberately the opposite priority from selectRepairCandidate.
+    const result = selectRepairLivenessCandidate([soonest, later], 13, scriptedRandom([0.5]));
+    expect(result?.cardId).toBe("soonest");
+  });
+
+  it("9. exact tie in normalEligiblePosition uses the injected RNG, same convention as every other selector", () => {
+    const a = livenessCard({ cardId: "a", repairObligation: { cardId: "a", wrongPosition: 10, targetPosition: 14, hardCapPosition: 17 } });
+    const b = livenessCard({ cardId: "b", repairObligation: { cardId: "b", wrongPosition: 10, targetPosition: 14, hardCapPosition: 18 } });
+    const low = selectRepairLivenessCandidate([a, b], 11, scriptedRandom([0]));
+    const high = selectRepairLivenessCandidate([a, b], 11, scriptedRandom([0.99]));
+    expect(low?.cardId).toBe("a");
+    expect(high?.cardId).toBe("b");
+  });
+
+  it("10. a mix of repair-pending and spaced-confirmation-pending cards compares across both shapes on the same soonest-position basis", () => {
+    const repairPending = livenessCard({ cardId: "repair", repairObligation: { cardId: "repair", wrongPosition: 10, targetPosition: 20, hardCapPosition: 17 } });
+    const spacedPending = livenessCard({ cardId: "spaced", relearningPhase: "SPACED_CONFIRMATION_PENDING", correctCooldownUntilPosition: 15 });
+    const result = selectRepairLivenessCandidate([repairPending, spacedPending], 11, scriptedRandom([0.5]));
+    expect(result?.cardId).toBe("spaced"); // 15 < 20
   });
 });

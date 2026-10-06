@@ -99,7 +99,12 @@ import {
   computeActiveAdmissions,
   type DeckActivePoolCard,
 } from "@/lib/learning-engine/active-pool";
-import { isGovernedByRepairObligation, isRepairHardCapReached, isRepairTargetReached } from "@/lib/learning-engine/repair-scheduler";
+import {
+  isGovernedByRepairObligation,
+  isRepairHardCapReached,
+  isRepairTargetReached,
+  selectRepairLivenessCandidate,
+} from "@/lib/learning-engine/repair-scheduler";
 import { computeDueWeight } from "@/lib/learning-engine/fsrs/priority";
 import { selectActiveInternalCard } from "@/lib/learning-engine/scheduler/active-internal-selection";
 import { selectOrdinaryActiveCandidates } from "@/lib/learning-engine/scheduler/active-selection";
@@ -148,6 +153,7 @@ export type SelectionReason =
   | "near_due_weighted_selection"
   | "random_mastered_shuffle_bag"
   | "emergency_cooldown_relaxation"
+  | "emergency_repair_relaxation"
   | "no_card_all_unavailable";
 
 /** Either an ordinary-mode scheduler regime or one of Phase 7's Post-Mastery regimes -- exactly one of the two families applies on any given decision, per whichever mode shouldUsePostMasteryMode selected. */
@@ -188,7 +194,7 @@ export interface SelectionTrace {
   readonly sourceWeightsRaw: FullSourceWeights;
   readonly sourceWeightsNormalized: FullSourceWeights;
   readonly candidateCounts: SourceCandidateCounts;
-  /** The weight the winning card was drawn with, where selection was weighted-random (active_weighted_selection, due_weighted_selection, near_due_weighted_selection, critical_due_interrupt). `null` for every deterministic-priority reason (repair_hard_cap, active_starvation, repair_target, spaced_confirmation, random_mastered_shuffle_bag, emergency_cooldown_relaxation, no_card_all_unavailable) -- a shuffle-bag draw is a deterministic consume-without-replacement, never a weighted pick among candidates, so it carries no priority weight either. */
+  /** The weight the winning card was drawn with, where selection was weighted-random (active_weighted_selection, due_weighted_selection, near_due_weighted_selection, critical_due_interrupt). `null` for every deterministic-priority reason (repair_hard_cap, active_starvation, repair_target, spaced_confirmation, random_mastered_shuffle_bag, emergency_cooldown_relaxation, emergency_repair_relaxation, no_card_all_unavailable) -- a shuffle-bag draw is a deterministic consume-without-replacement, never a weighted pick among candidates, so it carries no priority weight either. */
   readonly cardPriorityWeight: number | null;
   /** Populated only for due_weighted_selection and critical_due_interrupt (section 18's "retrievability for Due/Critical selections"). */
   readonly retrievability: number | null;
@@ -724,11 +730,11 @@ function chooseOrdinaryModeCard(input: OrdinaryModeInput): NextCardDecision {
   // the ordinary weighted draw.
   if (sourceEntries.length === 0) {
     const relaxed = selectEmergencyCooldownRelaxationCandidate(projectedCards, schedulerPosition, recorded);
-    if (relaxed === null) {
+    if (relaxed !== null) {
       return finalize({
-        cardId: null,
-        source: null,
-        selectionReason: "no_card_all_unavailable",
+        cardId: relaxed.cardId,
+        source: "ACTIVE",
+        selectionReason: "emergency_cooldown_relaxation",
         cardPriorityWeight: null,
         retrievability: null,
         intervalProgress: null,
@@ -737,10 +743,39 @@ function chooseOrdinaryModeCard(input: OrdinaryModeInput): NextCardDecision {
         postMasteryShuffleBagAfter,
       });
     }
+
+    // Approved RC-F small-deck audit follow-up: the ordinary-cooldown
+    // fallback above never considers a repair/relearning-governed card
+    // (by design -- see selectEmergencyCooldownRelaxationCandidate's own
+    // isGovernedByRepairObligation filter, unchanged). If EVERY live card
+    // is such a card and none has reached its own normal gate yet,
+    // scheduler_position can never advance (it only ever advances via a
+    // committed answer, and no answer is possible) -- a true, otherwise-
+    // permanent fixed point. This is the last-resort, Repair-specific
+    // liveness fallback for exactly that case: it never fires while the
+    // ordinary-cooldown fallback above could have found something, and it
+    // is checked before -- not instead of -- the final no_card_all_unavailable
+    // outcome. See repair-scheduler.ts's selectRepairLivenessCandidate for
+    // the full rationale and the soonest-gate selection rule.
+    const repairLiveness = selectRepairLivenessCandidate(projectedCards, schedulerPosition, recorded);
+    if (repairLiveness !== null) {
+      return finalize({
+        cardId: repairLiveness.cardId,
+        source: "ACTIVE",
+        selectionReason: "emergency_repair_relaxation",
+        cardPriorityWeight: null,
+        retrievability: null,
+        intervalProgress: null,
+        emergencyFallbackApplied: true,
+        firstPassQueueAfter: input.firstPassQueueBefore,
+        postMasteryShuffleBagAfter,
+      });
+    }
+
     return finalize({
-      cardId: relaxed.cardId,
-      source: "ACTIVE",
-      selectionReason: "emergency_cooldown_relaxation",
+      cardId: null,
+      source: null,
+      selectionReason: "no_card_all_unavailable",
       cardPriorityWeight: null,
       retrievability: null,
       intervalProgress: null,
@@ -898,10 +933,36 @@ function choosePostMasteryModeCard(input: PostMasteryModeInput): NextCardDecisio
   }
 
   // All three Post-Mastery sources empty (and no relearning obligation was
-  // due above): a degenerate state (e.g. an empty deck) -- never crash.
-  // Post-Mastery has no analogous "ordinary Active Correct cooldown" to
-  // relax, so there is no relaxation attempt here, only the terminal state.
+  // due above): Post-Mastery has no analogous "ordinary Active Correct
+  // cooldown" to relax, so there is no equivalent of the ordinary mode's
+  // emergency_cooldown_relaxation here -- but the SAME Repair liveness gap
+  // exists (approved RC-F small-deck audit follow-up, Post-Mastery
+  // extension): if every live card is Repair/relearning-governed and none
+  // has reached its own normal gate yet (the relearningService check
+  // above already returned null), scheduler_position can never advance,
+  // for the identical reason as ordinary mode -- it only ever advances via
+  // a committed answer, and no answer is possible. Reuses
+  // selectRepairLivenessCandidate completely unchanged (it is not
+  // Post-Mastery-aware, nor does it need to be -- a card's governance
+  // shape is identical regardless of deck mode); never invents a second
+  // policy. Only after this ALSO finds nothing (e.g. a genuinely empty
+  // deck) does the terminal no_card_all_unavailable fire -- never crash.
   if (sourceEntries.length === 0) {
+    const repairLiveness = selectRepairLivenessCandidate(projectedCards, schedulerPosition, recorded);
+    if (repairLiveness !== null) {
+      return finalize({
+        cardId: repairLiveness.cardId,
+        source: "ACTIVE",
+        selectionReason: "emergency_repair_relaxation",
+        cardPriorityWeight: null,
+        retrievability: null,
+        intervalProgress: null,
+        emergencyFallbackApplied: true,
+        firstPassQueueAfter,
+        postMasteryShuffleBagAfter: input.postMasteryShuffleBagBefore,
+      });
+    }
+
     return finalize({
       cardId: null,
       source: null,

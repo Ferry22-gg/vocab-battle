@@ -209,8 +209,24 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
   // Repair retry (sections 12.2/12.5, 13/13.2): within-day (LEARNING) or
   // relearning (FORGOTTEN). Dispatches on cardStatus WITHIN this reason
   // family only, per the module header.
+  //
+  // Approved RC-F small-deck audit follow-up: emergency_repair_relaxation
+  // (the Repair liveness fallback, scheduler/next-card.ts) joins this
+  // branch too, but ONLY for the repair-obligation shape it can actually
+  // produce (not SPACED_CONFIRMATION_PENDING -- see the next branch
+  // below). It is not a new transition family: a card released early by
+  // that fallback is still, structurally, a normal within-day or
+  // relearning repair-governed card (repairPending/relearningPhase
+  // unchanged by the fallback itself), so it is resolved by the exact
+  // same functions an ordinary repair_target/repair_hard_cap presentation
+  // already uses -- "preserve its identity as a Repair/relearning
+  // presentation" is satisfied by reuse, not a parallel implementation.
   // ===========================================================================
-  else if (selectionReason === "repair_target" || selectionReason === "repair_hard_cap") {
+  else if (
+    selectionReason === "repair_target" ||
+    selectionReason === "repair_hard_cap" ||
+    (selectionReason === "emergency_repair_relaxation" && cardState.relearningPhase !== "SPACED_CONFIRMATION_PENDING")
+  ) {
     if (cardState.cardStatus === "LEARNING") {
       if (correct) {
         const result = resolveOrdinaryRepairCorrect(cardState, newSchedulerPosition);
@@ -240,8 +256,16 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
 
   // ===========================================================================
   // Spaced Confirmation (sections 13/13.2): FORGOTTEN + SPACED_CONFIRMATION_PENDING.
+  //
+  // Approved RC-F small-deck audit follow-up: emergency_repair_relaxation
+  // also joins this branch when the released card is a
+  // SPACED_CONFIRMATION_PENDING one (the other shape the Repair liveness
+  // fallback can rescue) -- same reuse rationale as the branch above.
   // ===========================================================================
-  else if (selectionReason === "spaced_confirmation") {
+  else if (
+    selectionReason === "spaced_confirmation" ||
+    (selectionReason === "emergency_repair_relaxation" && cardState.relearningPhase === "SPACED_CONFIRMATION_PENDING")
+  ) {
     invariant(
       cardState.cardStatus === "FORGOTTEN" && cardState.relearningPhase === "SPACED_CONFIRMATION_PENDING",
       `selectionReason "spaced_confirmation" requires cardStatus FORGOTTEN and relearningPhase SPACED_CONFIRMATION_PENDING`,

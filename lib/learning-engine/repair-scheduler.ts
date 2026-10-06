@@ -522,3 +522,112 @@ export interface RepairGovernanceCardState {
 export function isGovernedByRepairObligation(card: RepairGovernanceCardState): boolean {
   return card.repairPending || card.relearningPhase !== null;
 }
+
+// =============================================================================
+// Repair liveness fallback -- approved RC-F small-deck audit follow-up
+// =============================================================================
+
+/**
+ * The audit finding this fixes: `scheduler_position` advances ONLY via a
+ * committed answer (lib/learning-engine/runtime/commit-answer.ts), and a
+ * committed answer requires a selectable card. If every live card in a
+ * deck is simultaneously governed by a repair/relearning obligation
+ * (isGovernedByRepairObligation) and NONE has reached its own normal gate
+ * yet (repair target, or the Spaced Confirmation cooldown gate), and no
+ * Due/Near-Due candidate exists either, `chooseNextCard` correctly and
+ * safely returns `no_card_all_unavailable` (sections 12.2/13, 35.1 --
+ * the existing ordinary-cooldown emergency fallback deliberately,
+ * correctly never relaxes a governed card, see
+ * selectEmergencyCooldownRelaxationCandidate in scheduler/next-card.ts
+ * and this module's own tests #27/#29). That safe refusal is itself a
+ * true fixed point: re-evaluating the identical, unchanged state produces
+ * the identical result forever, because nothing can ever advance
+ * scheduler_position past it.
+ *
+ * This is a DISTINCT, LAST-RESORT fallback from
+ * emergency_cooldown_relaxation -- it is reached only when that one has
+ * already found nothing (scheduler/next-card.ts calls this strictly
+ * after selectEmergencyCooldownRelaxationCandidate returns null), and it
+ * is the only path in this engine that presents a governed card before
+ * its own normal gate has opened. It does not touch, weaken, or bypass
+ * the ordinary cooldown fallback's own exclusion of governed cards; it
+ * is a second, separate check for a second, separate situation.
+ *
+ * Selects by SOONEST own normal gate -- not oldest Wrong (contrast
+ * selectRepairCandidate, which resolves priority among several
+ * ALREADY-due repairs on one draw). The card closest to its own correct,
+ * non-relaxed presentation time is the one whose normal spacing is
+ * violated least by releasing it early. Injected RNG only for an exact
+ * tie, the same convention every other selector in this engine uses.
+ *
+ * Covers both governance shapes equally, since "Repair / relearning
+ * obligations" (the audited deadlock) is not limited to one:
+ *   - an ordinary or relearning repair obligation (card.repairObligation
+ *     non-null) -- compared on its own targetPosition;
+ *   - a FORGOTTEN card awaiting Spaced Confirmation
+ *     (relearningPhase === "SPACED_CONFIRMATION_PENDING", no
+ *     repairObligation -- it reuses the Correct-cooldown gate instead,
+ *     see repair-scheduler.ts's resolveRelearningRepairCorrect) --
+ *     compared on its own correctCooldownUntilPosition.
+ *
+ * Defense-in-depth only (not relied upon by the caller for correctness):
+ * a repair whose hard cap has been reached would already have fired as
+ * the GLOBAL interrupt (scheduler/interrupts.ts) before this function is
+ * ever reached, and a repair/Spaced-Confirmation card whose own gate has
+ * already opened is already an ordinary repair_target/spaced_confirmation
+ * candidate and would never have made it this far either -- both are
+ * filtered out here anyway, rather than trusting the caller's ordering
+ * alone.
+ */
+export interface RepairLivenessCardState {
+  readonly cardId: string;
+  readonly repairObligation: RepairObligation | null;
+  readonly relearningPhase: LearningEngineCardState["relearningPhase"];
+  readonly correctCooldownUntilPosition: number | null;
+}
+
+export interface RepairLivenessCandidate {
+  readonly cardId: string;
+  /** The position this card's own normal gate would have opened at -- the key it won the "soonest" tie-break on. Exposed for a future decision trace. */
+  readonly normalEligiblePosition: number;
+}
+
+export function selectRepairLivenessCandidate(
+  cards: readonly RepairLivenessCardState[],
+  schedulerPosition: number,
+  random: RandomSource,
+): RepairLivenessCandidate | null {
+  const candidates: RepairLivenessCandidate[] = [];
+
+  for (const card of cards) {
+    if (card.repairObligation !== null) {
+      const obligation = card.repairObligation;
+      if (isRepairTargetReached(obligation, schedulerPosition) || isRepairHardCapReached(obligation, schedulerPosition)) {
+        continue;
+      }
+      candidates.push({ cardId: card.cardId, normalEligiblePosition: obligation.targetPosition });
+      continue;
+    }
+
+    if (card.relearningPhase === "SPACED_CONFIRMATION_PENDING" && card.correctCooldownUntilPosition !== null) {
+      if (isEligibleForNormalSelection({ correctCooldownUntilPosition: card.correctCooldownUntilPosition }, schedulerPosition)) {
+        continue;
+      }
+      candidates.push({ cardId: card.cardId, normalEligiblePosition: card.correctCooldownUntilPosition });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const soonest = Math.min(...candidates.map((c) => c.normalEligiblePosition));
+  const winners = candidates.filter((c) => c.normalEligiblePosition === soonest);
+
+  if (winners.length === 1) {
+    return winners[0];
+  }
+
+  const index = Math.min(Math.floor(random() * winners.length), winners.length - 1);
+  return winners[index];
+}

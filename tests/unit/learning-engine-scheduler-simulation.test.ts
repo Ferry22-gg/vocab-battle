@@ -633,12 +633,13 @@ describe("emergency fallback acceptance (stateful, Phase 6F brief section 13)", 
     expect(decision.cardId).toBe("soon");
   });
 
-  it("repair minimum gap, repair hard cap, and spaced-confirmation minimum gap are never relaxed -- repair/relearning-governed cards never enter emergency selection", () => {
+  it("repair minimum gap, repair hard cap, and spaced-confirmation minimum gap are never relaxed BY THE ORDINARY (cooldown) emergency fallback -- repair/relearning-governed cards never enter that one; the distinct Repair liveness fallback (approved RC-F small-deck audit follow-up) is what rescues this exact scenario instead", () => {
     const governed = makeRepairGovernedCard("governed", makeRepairObligation("governed", 10, 17), { correctCooldownUntilPosition: 50 });
     const sim = new SchedulerSimulation({ cards: [governed], random: createSeededRandom(83), schedulerPosition: 11 }); // target(14)/hard cap(17) both not yet reached
     const decision = sim.step(true);
-    expect(decision.selectionReason).toBe("no_card_all_unavailable");
-    expect(decision.cardId).toBeNull();
+    expect(decision.selectionReason).not.toBe("emergency_cooldown_relaxation");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.cardId).toBe("governed");
   });
 
   it("no safe candidate -> no_card_all_unavailable, and the trace clearly marks the emergency branch", () => {
@@ -789,8 +790,12 @@ describe("trace invariants across a long mixed simulation (Phase 6F brief sectio
         expect(decision.trace.sourceWeightsNormalized.near).toBe(0);
       }
 
-      // emergencyFallbackApplied is true only for the two emergency reasons.
-      const isEmergencyReason = decision.selectionReason === "emergency_cooldown_relaxation" || decision.selectionReason === "no_card_all_unavailable";
+      // emergencyFallbackApplied is true only for the three emergency reasons
+      // (approved RC-F small-deck audit follow-up added emergency_repair_relaxation).
+      const isEmergencyReason =
+        decision.selectionReason === "emergency_cooldown_relaxation" ||
+        decision.selectionReason === "emergency_repair_relaxation" ||
+        decision.selectionReason === "no_card_all_unavailable";
       expect(decision.trace.emergencyFallbackApplied).toBe(isEmergencyReason);
 
       // a global interrupt never consumes ordinary-source RNG beyond its own tie-break/weighted-pick needs.

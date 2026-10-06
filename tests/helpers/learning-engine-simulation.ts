@@ -405,6 +405,26 @@ export class SchedulerSimulation {
       return;
     }
 
+    // Approved RC-F small-deck audit follow-up: the Repair liveness
+    // fallback (scheduler/next-card.ts) releases a governed card before
+    // its own normal gate opens, but the card's underlying shape is
+    // unchanged -- route to whichever existing handler that shape already
+    // uses, same as prepare-answer.ts's own dispatch.
+    if (reason === "emergency_repair_relaxation") {
+      if (card.relearningPhase === "SPACED_CONFIRMATION_PENDING") {
+        if (correct) {
+          this.applySpacedConfirmationCorrect(card);
+        } else {
+          this.applySpacedConfirmationWrongAnswer(card, newPosition);
+        }
+      } else if (correct) {
+        this.applyRepairRetryCorrect(card, newPosition);
+      } else {
+        this.applyRepairRetryWrong(card, newPosition);
+      }
+      return;
+    }
+
     if (reason === "due_weighted_selection" || reason === "critical_due_interrupt") {
       this.applyFsrsDueAnswer(card, correct, newPosition);
       return;

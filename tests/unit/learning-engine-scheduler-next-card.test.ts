@@ -464,34 +464,206 @@ describe("emergency cooldown relaxation (sections 14-15 of the brief)", () => {
     expect(high.cardId).toBe("b");
   });
 
-  it("27. a repair-governed card is never relaxed into the emergency fallback", () => {
+  it("27. a repair-governed card is never relaxed into the ORDINARY (cooldown) emergency fallback -- it is rescued only by the distinct Repair liveness fallback instead", () => {
     // wrongPosition 10 -> target 14, hard cap 17; at position 11 neither is reached yet, so this
     // card contributes nothing through the repair_target channel either -- the only question is
-    // whether the emergency branch incorrectly relaxes it anyway.
+    // whether the ORDINARY cooldown-relaxation branch incorrectly relaxes it anyway (it must not;
+    // see the Repair liveness fallback block below for what DOES happen to this exact scenario
+    // post-RC-F-audit-fix).
     const governed = repairGovernedCard("governed", obligation("governed", 10, 17), { correctCooldownUntilPosition: 20 });
     const s = snapshot({ cards: [governed], schedulerPosition: 11 });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.selectionReason).toBe("no_card_all_unavailable");
-    expect(decision.cardId).toBeNull();
+    expect(decision.selectionReason).not.toBe("emergency_cooldown_relaxation");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.cardId).toBe("governed");
   });
 
-  it("28. a SPACED_CONFIRMATION_PENDING card whose gate has not opened is never relaxed into the emergency fallback", () => {
+  it("28. a SPACED_CONFIRMATION_PENDING card whose gate has not opened is never relaxed into the ORDINARY (cooldown) emergency fallback -- it is rescued only by the distinct Repair liveness fallback instead", () => {
     const spaced = spacedConfirmationCard("spaced-1", 50); // gate position far in the future
     const s = snapshot({ cards: [spaced], schedulerPosition: 10 });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.selectionReason).toBe("no_card_all_unavailable");
-    expect(decision.cardId).toBeNull();
+    expect(decision.selectionReason).not.toBe("emergency_cooldown_relaxation");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.cardId).toBe("spaced-1");
   });
 
-  it("29. a within-day repair before its minimum gap is never relaxed, even though it is the only card in the deck", () => {
+  it("29. a within-day repair before its minimum gap is never relaxed by the ORDINARY cooldown fallback, even though it is the only card in the deck -- the Repair liveness fallback (not the ordinary one) is what rescues it", () => {
     const pending = repairGovernedCard("pending", obligation("pending", 10, 17)); // target 14, hard cap 17, neither reached
     const s = snapshot({ cards: [pending], schedulerPosition: 11 });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
-    expect(decision.selectionReason).toBe("no_card_all_unavailable");
+    expect(decision.selectionReason).not.toBe("emergency_cooldown_relaxation");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.cardId).toBe("pending");
   });
 
   it("30. no safe candidate at all -> no_card_all_unavailable, never throws", () => {
     const s = snapshot({ cards: [] });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBeNull();
+    expect(decision.source).toBeNull();
+    expect(decision.selectionReason).toBe("no_card_all_unavailable");
+    expect(decision.trace.emergencyFallbackApplied).toBe(true);
+  });
+});
+
+// =============================================================================
+// REPAIR LIVENESS FALLBACK (approved RC-F small-deck audit follow-up)
+// =============================================================================
+
+describe("Repair liveness fallback (approved RC-F small-deck audit follow-up)", () => {
+  it("40. 1-card deck: Repair-governed, target not yet reached, no other candidate -> rescued by the fallback, never no_card_all_unavailable, never ordinary cooldown relaxation", () => {
+    const pending = repairGovernedCard("pending", obligation("pending", 10, 17)); // target 14, hard cap 17, neither reached at position 11
+    const s = snapshot({ cards: [pending], schedulerPosition: 11 });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("pending");
+    expect(decision.source).toBe("ACTIVE");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.trace.emergencyFallbackApplied).toBe(true);
+  });
+
+  it("41. a SPACED_CONFIRMATION_PENDING card (the relearning shape, no repairObligation) is rescued the same way once it is the only live candidate", () => {
+    const spaced = spacedConfirmationCard("spaced-1", 50); // gate far in the future
+    const s = snapshot({ cards: [spaced], schedulerPosition: 10 });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("spaced-1");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+  });
+
+  it("A. 2-card deck: both cards become Repair-governed before either can normally return -> fallback selects the soonest target", () => {
+    const a = repairGovernedCard("a", obligation("a", 10, 17)); // target 14
+    const b = repairGovernedCard("b", obligation("b", 12, 19)); // target 16
+    const s = snapshot({ cards: [a, b], schedulerPosition: 13 });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("a"); // soonest target (14 < 16)
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+  });
+
+  it("B. 5-card deck: all five currently selectable cards become Repair-governed and no target is ready -> fallback selects the soonest among all five", () => {
+    const cards = ["a", "b", "c", "d", "e"].map((id, i) => repairGovernedCard(id, obligation(id, 10 + i, 20 + i)));
+    // targets: a=14, b=15, c=16, d=17, e=18 -- none reached at position 13
+    const s = snapshot({ cards, schedulerPosition: 13 });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("a");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+  });
+
+  it("C. control: the fallback never activates while any normal selectable candidate exists (ordinary Active, ordinary-cooldown-relaxable, or target-reached repair)", () => {
+    const ordinary = activeCard({ cardId: "ordinary" });
+    const governed = repairGovernedCard("governed", obligation("governed", 10, 17));
+    const s = snapshot({ cards: [ordinary, governed], schedulerPosition: 11 });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("ordinary");
+    expect(decision.selectionReason).not.toBe("emergency_repair_relaxation");
+
+    // Also: when an ordinary-cooldown-relaxable card exists alongside a
+    // governed one, the EXISTING ordinary fallback wins -- this fallback
+    // is strictly last-resort, never a competing/earlier check.
+    const cooling = activeCard({ cardId: "cooling", correctCooldownUntilPosition: 30 });
+    const alsoGoverned = repairGovernedCard("governed-2", obligation("governed-2", 10, 17));
+    const s2 = snapshot({ cards: [cooling, alsoGoverned], schedulerPosition: 11 });
+    const decision2 = chooseNextCard(s2, scriptedRandom([0.5]));
+    expect(decision2.cardId).toBe("cooling");
+    expect(decision2.selectionReason).toBe("emergency_cooldown_relaxation");
+  });
+
+  it("D. control: once a Repair target is legitimately reached, normal repair_target selection wins -- never emergency_repair_relaxation", () => {
+    const pending = repairGovernedCard("pending", obligation("pending", 10, 17)); // target 14
+    const s = snapshot({ cards: [pending], schedulerPosition: 14 }); // target reached exactly
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("pending");
+    expect(decision.selectionReason).toBe("repair_target");
+  });
+
+  it("E. tie-break: two Repair-governed cards with the identical soonest target use the injected RNG, same convention as every other selector", () => {
+    const a = repairGovernedCard("a", obligation("a", 10, 17)); // target 14
+    const b = repairGovernedCard("b", obligation("b", 10, 18)); // also wrongPosition 10 -> target 14, different hard cap
+    const s = snapshot({ cards: [a, b], schedulerPosition: 11 });
+    const low = chooseNextCard(s, scriptedRandom([0])); // index 0 -> "a"
+    const high = chooseNextCard(s, scriptedRandom([0.99])); // index 1 -> "b"
+    expect(low.cardId).toBe("a");
+    expect(high.cardId).toBe("b");
+    expect(low.selectionReason).toBe("emergency_repair_relaxation");
+    expect(high.selectionReason).toBe("emergency_repair_relaxation");
+  });
+
+  it("fixed-point regression: re-evaluating the identical frozen 1-card state no longer repeats no_card_all_unavailable", () => {
+    const pending = repairGovernedCard("pending", obligation("pending", 10, 17));
+    const s = snapshot({ cards: [pending], schedulerPosition: 11 });
+    const first = chooseNextCard(s, scriptedRandom([0.5]));
+    const second = chooseNextCard(s, scriptedRandom([0.5])); // identical snapshot, as if nothing could be answered before -- but now something CAN be
+    expect(first.selectionReason).toBe("emergency_repair_relaxation");
+    expect(second.selectionReason).toBe("emergency_repair_relaxation");
+    expect(first.cardId).toBe("pending");
+    expect(second.cardId).toBe("pending");
+  });
+});
+
+// =============================================================================
+// REPAIR LIVENESS FALLBACK -- POST-MASTERY EXTENSION (approved RC-F
+// small-deck audit follow-up, Post-Mastery classification C fix)
+// =============================================================================
+
+describe("Repair liveness fallback, Post-Mastery mode (approved RC-F audit follow-up)", () => {
+  function lapsedMasteredCard(cardId: string, obligation: RepairObligation): SchedulableCardRow {
+    return repairGovernedCard(cardId, obligation, {
+      cardStatus: "FORGOTTEN",
+      learningStage: null,
+      relearningPhase: "REPAIR_PENDING",
+      hasEverBeenMastered: true,
+    });
+  }
+
+  it("A. 1-card fully-mastered deck: the card lapses into relearning, Repair gate not reached, no other candidate -> rescued via emergency_repair_relaxation, not no_card_all_unavailable", () => {
+    const lapsed = lapsedMasteredCard("lapsed", obligation("lapsed", 10, 17)); // target 14, hard cap 17, neither reached at position 11
+    const s = snapshot({ cards: [lapsed], schedulerPosition: 11, hasAchievedFullMastery: true });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.trace.schedulerMode.startsWith("post_mastery_")).toBe(true);
+    expect(decision.cardId).toBe("lapsed");
+    expect(decision.source).toBe("ACTIVE");
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+    expect(decision.trace.emergencyFallbackApplied).toBe(true);
+  });
+
+  it("B. fixed-point regression: re-evaluating the identical frozen Post-Mastery Repair-only snapshot no longer remains permanently stuck", () => {
+    const lapsed = lapsedMasteredCard("lapsed", obligation("lapsed", 10, 17));
+    const s = snapshot({ cards: [lapsed], schedulerPosition: 11, hasAchievedFullMastery: true });
+    const first = chooseNextCard(s, scriptedRandom([0.5]));
+    const second = chooseNextCard(s, scriptedRandom([0.5])); // identical snapshot
+    expect(first.selectionReason).toBe("emergency_repair_relaxation");
+    expect(second.selectionReason).toBe("emergency_repair_relaxation");
+    expect(first.cardId).toBe("lapsed");
+    expect(second.cardId).toBe("lapsed");
+  });
+
+  it("C. multiple Repair-governed lapsed/mastered cards, no target ready -> fallback selects the soonest normal target", () => {
+    const a = lapsedMasteredCard("a", obligation("a", 10, 17)); // target 14
+    const b = lapsedMasteredCard("b", obligation("b", 12, 19)); // target 16
+    const s = snapshot({ cards: [a, b], schedulerPosition: 13, hasAchievedFullMastery: true });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("a"); // soonest target (14 < 16)
+    expect(decision.selectionReason).toBe("emergency_repair_relaxation");
+  });
+
+  it("D. control: a normal Due candidate alongside a not-yet-due Repair-governed lapsed card -> ordinary Post-Mastery selection wins, the liveness fallback never fires", () => {
+    const due = outsideCard({ cardId: "due", cardStatus: "LEARNED", hasEverBeenMastered: true });
+    const lapsed = lapsedMasteredCard("lapsed", obligation("lapsed", 10, 17));
+    const s = snapshot({ cards: [due, lapsed], schedulerPosition: 11, hasAchievedFullMastery: true });
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.trace.schedulerMode.startsWith("post_mastery_")).toBe(true);
+    expect(decision.cardId).toBe("due");
+    expect(decision.selectionReason).not.toBe("emergency_repair_relaxation");
+  });
+
+  it("E. control: once a Repair target is legitimately reached in Post-Mastery mode, normal repair_target selection wins -- never emergency_repair_relaxation", () => {
+    const lapsed = lapsedMasteredCard("lapsed", obligation("lapsed", 10, 17)); // target 14
+    const s = snapshot({ cards: [lapsed], schedulerPosition: 14, hasAchievedFullMastery: true }); // target reached exactly
+    const decision = chooseNextCard(s, scriptedRandom([0.5]));
+    expect(decision.cardId).toBe("lapsed");
+    expect(decision.selectionReason).toBe("repair_target");
+  });
+
+  it("F. empty Post-Mastery deck: truly no candidate anywhere -> normal no_card_all_unavailable, never fabricates a Repair candidate", () => {
+    const s = snapshot({ cards: [], hasAchievedFullMastery: true });
     const decision = chooseNextCard(s, scriptedRandom([0.5]));
     expect(decision.cardId).toBeNull();
     expect(decision.source).toBeNull();
@@ -544,7 +716,7 @@ describe("SelectionTrace completeness and correctness (section 18 of the brief)"
     expect(decision.trace.policyVersion).toBe("learning-engine-v1.0");
   });
 
-  it("35. emergencyFallbackApplied is true only for the two emergency outcomes, false otherwise", () => {
+  it("35. emergencyFallbackApplied is true only for the three emergency outcomes, false otherwise", () => {
     const ordinary = chooseNextCard(snapshot({ cards: [activeCard()] }), scriptedRandom([0.5]));
     expect(ordinary.trace.emergencyFallbackApplied).toBe(false);
 
@@ -556,6 +728,14 @@ describe("SelectionTrace completeness and correctness (section 18 of the brief)"
 
     const emergency = chooseNextCard(snapshot({ cards: [activeCard({ correctCooldownUntilPosition: 20 })], schedulerPosition: 10 }), scriptedRandom([0.5]));
     expect(emergency.trace.emergencyFallbackApplied).toBe(true);
+    expect(emergency.selectionReason).toBe("emergency_cooldown_relaxation");
+
+    const repairLiveness = chooseNextCard(
+      snapshot({ cards: [repairGovernedCard("pending", obligation("pending", 10, 17))], schedulerPosition: 11 }),
+      scriptedRandom([0.5]),
+    );
+    expect(repairLiveness.trace.emergencyFallbackApplied).toBe(true);
+    expect(repairLiveness.selectionReason).toBe("emergency_repair_relaxation");
 
     const noCard = chooseNextCard(snapshot({ cards: [] }), scriptedRandom([0.5]));
     expect(noCard.trace.emergencyFallbackApplied).toBe(true);
