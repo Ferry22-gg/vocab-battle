@@ -310,6 +310,7 @@ export function SessionScreen({
             />
 
             <FlashCard
+              cardId={cardState.card.cardId}
               front={cardState.card.front}
               back={cardState.card.back}
               frontLabel={frontLanguageLabel}

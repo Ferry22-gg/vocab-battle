@@ -45,13 +45,38 @@
  * lib/session-ui/reveal-guard.ts's header for the full incident writeup.
  */
 
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type TransitionEvent } from "react";
+import {
+  applyEdgeReached,
+  applyRevealedChange,
+  initialFlashCardDisplayState,
+  type FlashCardContent,
+} from "@/lib/session-ui/flash-card-display";
 
 /** Matches the `duration-*` Tailwind classes below -- keep both in sync. */
 const FLIP_DURATION_MS = 200;
 const REDUCED_MOTION_DURATION_MS = 150;
 
+// The grading-transition flip is two legs (back -> edge -> front), each
+// half of the single-leg reveal flip's own duration, so the total
+// perceived pacing matches what it always has.
+const ROTATE_LEG_MS = FLIP_DURATION_MS / 2;
+const OPACITY_LEG_MS = REDUCED_MOTION_DURATION_MS / 2;
+
+// Pure safety net, not the primary driver: if the real transitionend
+// this is paired with never fires for some unanticipated reason, this
+// forces the edge-reached swap anyway rather than stranding the card
+// frozen forever. Generous relative to the leg duration specifically so
+// it never fires before a legitimately slow (but real) transitionend
+// would -- see this module's own header on why a timer is not the
+// preferred primary signal here. Computed per-mode (rotation vs.
+// opacity legs have different durations), never a single fixed constant.
+function edgeFallbackMs(reducedMotion: boolean): number {
+  return (reducedMotion ? OPACITY_LEG_MS : ROTATE_LEG_MS) * 3;
+}
+
 export function FlashCard({
+  cardId,
   front,
   back,
   frontLabel,
@@ -60,6 +85,8 @@ export function FlashCard({
   reducedMotion,
   onFlipDone,
 }: {
+  /** session-screen.tsx's cardState.card.cardId -- identifies which card `front`/`back` belong to; see the freeze block below for why this component needs it. */
+  readonly cardId: string;
   readonly front: string;
   readonly back: string;
   /** The front/back face's eyebrow label (e.g. "Swahili" / "English"), derived from the deck's own front_language/back_language -- never hardcoded here, so this component works for any deck language pair. */
@@ -87,6 +114,91 @@ export function FlashCard({
     return () => clearTimeout(timer);
   }, [revealed, reducedMotion]);
 
+  // ---------------------------------------------------------------------
+  // Displayed-content freeze (Alpha-blocking fix: NEITHER the next
+  // card's answer NOR the previous card's front may ever flash during
+  // the grading transition)
+  // ---------------------------------------------------------------------
+  // `displayed` is this component's OWN copy of what is actually
+  // rendered -- deliberately never `front`/`back`/`frontLabel`/
+  // `backLabel` directly. Those props change the moment
+  // session-screen.tsx's applyNextCard() runs: `setCardState(nextCard)`
+  // immediately followed, in the SAME synchronous call (same React
+  // commit), by `dispatchGuard({type:"RESET"})`, which is what flips
+  // `revealed` from true back to false.
+  //
+  // A first fix simply froze `displayed` on the OLD card for the whole
+  // flip-back duration, then swapped once fully settled at 0deg/front-
+  // facing. That closed the next-answer leak but opened a second one:
+  // once the rotation swings back past 90deg toward 0deg, the face
+  // coming back into view is still showing the OLD card -- its FRONT
+  // (question) becomes briefly readable again before the eventual swap.
+  //
+  // The actual fix is a genuine two-phase flip, split at the edge
+  // (90deg -- or, in the reduced-motion cross-fade, the instant both
+  // faces are simultaneously at opacity 0), where NEITHER face is
+  // readable: freeze on the OLD content while rotating/fading TOWARD the
+  // edge, swap content exactly AT the edge, then rotate/fade the NEW
+  // content IN. The viewer only ever sees: old answer -> edge (nothing
+  // readable) -> new question -- never the old question, never the new
+  // answer. See lib/session-ui/flash-card-display.ts's own header for
+  // the full state machine this is wired to.
+  //
+  // The edge-reached swap is driven by the real CSS transition's own
+  // `onTransitionEnd` (filtered to this element's own `transform`/
+  // `opacity` property, not a bubbled child event), never a guessed
+  // timer -- a timer-at-midpoint can drift under slow rendering and fire
+  // before or after the rotation has actually reached an unreadable
+  // angle. A generous fallback timer (edgeFallbackMs, well past the leg's
+  // own duration) exists purely so a transition that somehow never fires
+  // `transitionend` (the hazard this file's header documents for the
+  // *reveal* direction's own timer-over-transitionend choice) can't
+  // strand the card frozen forever -- applyEdgeReached is idempotent, so
+  // whichever of the two fires first wins and the other is a no-op.
+  //
+  // The decision logic itself is the pure, directly-unit-tested state
+  // machine in lib/session-ui/flash-card-display.ts -- this component
+  // only wires it to React: the `revealed`-changed branch below runs
+  // DURING RENDER (React's own documented "adjusting state when a prop
+  // changes" escape hatch --
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  // -- a conditional setState call compared against a previous-render
+  // snapshot, not inside an Effect). Only the actual timed fallback (an
+  // external-clock wait, which IS Effect territory) lives in a real
+  // `useEffect` below.
+  const content: FlashCardContent = { cardId, front, back, frontLabel, backLabel };
+  const [displayState, setDisplayState] = useState(() => initialFlashCardDisplayState(content, revealed));
+
+  if (revealed !== displayState.prevRevealed) {
+    setDisplayState(applyRevealedChange(displayState, content, revealed));
+  }
+
+  const { position, pendingSwap } = displayState;
+
+  // Fallback-only; the primary signal is the transitionend handlers wired
+  // into the rotating layer / back face below. `applyEdgeReached` itself
+  // is a no-op once the swap has already happened via the other path, so
+  // whichever of the two fires first is the one that actually matters.
+  useEffect(() => {
+    if (position !== "edge" || pendingSwap === null) return;
+    const timer = setTimeout(() => setDisplayState(applyEdgeReached), edgeFallbackMs(reducedMotion));
+    return () => clearTimeout(timer);
+  }, [position, pendingSwap, reducedMotion]);
+
+  const displayed = displayState.displayed;
+
+  function handleRotationTransitionEnd(event: TransitionEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget || event.propertyName !== "transform") return;
+    setDisplayState(applyEdgeReached);
+  }
+
+  function handleBackFaceTransitionEnd(event: TransitionEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget || event.propertyName !== "opacity") return;
+    setDisplayState(applyEdgeReached);
+  }
+
+  const rotationDeg = position === "back" ? 180 : position === "edge" ? 90 : 0;
+
   return (
     <div
       className="relative min-h-[220px] max-h-[28rem] flex-1 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
@@ -94,31 +206,43 @@ export function FlashCard({
     >
       <div
         className="absolute inset-0"
+        onTransitionEnd={reducedMotion ? undefined : handleRotationTransitionEnd}
         style={
           reducedMotion
             ? undefined
             : {
                 transformStyle: "preserve-3d",
-                transform: revealed ? "rotateY(180deg)" : "rotateY(0deg)",
-                transition: "transform 200ms ease-out",
+                transform: `rotateY(${rotationDeg}deg)`,
+                transition: `transform ${ROTATE_LEG_MS}ms ease-out`,
               }
         }
       >
         <CardFace
-          eyebrow={frontLabel}
-          text={front}
+          eyebrow={displayed.frontLabel}
+          text={displayed.front}
           style={
             reducedMotion
-              ? { position: "absolute", inset: 0, opacity: revealed ? 0 : 1, transition: "opacity 150ms ease-out" }
+              ? {
+                  position: "absolute",
+                  inset: 0,
+                  opacity: position === "front" ? 1 : 0,
+                  transition: `opacity ${OPACITY_LEG_MS}ms ease-out`,
+                }
               : { position: "absolute", inset: 0, backfaceVisibility: "hidden" }
           }
         />
         <CardFace
-          eyebrow={backLabel}
-          text={back}
+          eyebrow={displayed.backLabel}
+          text={displayed.back}
+          onTransitionEnd={reducedMotion ? handleBackFaceTransitionEnd : undefined}
           style={
             reducedMotion
-              ? { position: "absolute", inset: 0, opacity: revealed ? 1 : 0, transition: "opacity 150ms ease-out" }
+              ? {
+                  position: "absolute",
+                  inset: 0,
+                  opacity: position === "back" ? 1 : 0,
+                  transition: `opacity ${OPACITY_LEG_MS}ms ease-out`,
+                }
               : { position: "absolute", inset: 0, backfaceVisibility: "hidden", transform: "rotateY(180deg)" }
           }
         />
@@ -139,13 +263,15 @@ function CardFace({
   eyebrow,
   text,
   style,
+  onTransitionEnd,
 }: {
   readonly eyebrow: string;
   readonly text: string;
   readonly style: CSSProperties;
+  readonly onTransitionEnd?: (event: TransitionEvent<HTMLDivElement>) => void;
 }) {
   return (
-    <div className="flex h-full flex-col p-6" style={style}>
+    <div className="flex h-full flex-col p-6" style={style} onTransitionEnd={onTransitionEnd}>
       <p className="shrink-0 pt-2 text-center text-xs font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-600">
         {eyebrow}
       </p>
