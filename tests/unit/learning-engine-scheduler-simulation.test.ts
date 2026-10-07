@@ -282,9 +282,18 @@ describe("repair timing acceptance (Phase 6F brief section 6)", () => {
     const offsets: number[] = [];
 
     for (let trial = 0; trial < 15; trial += 1) {
+      // `wrongPosition` here is the helper's own `sim.position` read AFTER
+      // the Wrong commits (post-increment) -- one MORE than the actual
+      // stored `repairObligation.wrongPosition` (the presentation
+      // position, position-semantics fix). `offsets` is still computed
+      // relative to the TRUE stored wrongPosition, so it still measures
+      // exactly `sampled gap + 1` (targetPosition's own documented
+      // formula, repair-scheduler.ts) -- unaffected by the fix, since both
+      // sides of that subtraction come from the same corrected value.
       const { wrongPosition } = wrongTheNextOrdinaryActiveCard(sim, 100);
-      const card = sim.getAllCards().find((c) => c.repairObligation !== null && c.repairObligation.wrongPosition === wrongPosition)!;
-      offsets.push(card.repairObligation!.targetPosition - wrongPosition);
+      const presentationPosition = wrongPosition - 1;
+      const card = sim.getAllCards().find((c) => c.repairObligation !== null && c.repairObligation.wrongPosition === presentationPosition)!;
+      offsets.push(card.repairObligation!.targetPosition - presentationPosition);
       // Let this repair resolve (Correct) before moving to the next trial.
       for (let i = 0; i < 20; i += 1) {
         const decision = sim.step(true);
@@ -377,23 +386,32 @@ describe("Correct cooldown acceptance (stateful, Phase 6F brief section 7)", () 
         targetId = decision.cardId;
       }
     }
-    const correctPosition = sim.position; // N
+    // `correctPosition` is `sim.position` (the harness's own POST-increment
+    // committed-answer counter) read right after the Correct -- i.e. one
+    // MORE than the presentation position (P) the Correct actually
+    // occurred at for gate-arithmetic purposes (position-semantics fix:
+    // `presentationPosition = P = correctPosition - 1`, matching
+    // lib/learning-engine/runtime/prepare-answer.ts's own convention).
+    // `applyCorrectCooldown(P) = P + 6 = correctPosition + 5`.
+    const correctPosition = sim.position;
     const cooldownUntil = sim.getCard(targetId).correctCooldownUntilPosition!;
-    expect(cooldownUntil).toBe(correctPosition + 6); // N+6, matching applyCorrectCooldown's own semantics
+    expect(cooldownUntil).toBe(correctPosition + 5);
 
     for (let i = 0; i < 5; i += 1) {
       const decision = sim.step(true);
-      expect(decision.cardId).not.toBe(targetId); // N+1..N+5 blocked
+      expect(decision.cardId).not.toBe(targetId); // the 5 intervening cards remain blocked
       expect(decision.selectionReason).not.toBe("emergency_cooldown_relaxation"); // the big baseline deck has ample ordinary candidates
     }
 
-    // The card becomes an ordinary candidate again at N+6 -- not necessarily
-    // selected immediately (section 11.1: "not guaranteed... returns to
-    // weighted selection"), so assert eligibility via the live card state
-    // rather than requiring this exact draw to pick it.
+    // After exactly 5 further committed answers, sim.position has reached
+    // cooldownUntil exactly -- the card becomes an ordinary candidate
+    // again, not necessarily selected immediately (section 11.1: "not
+    // guaranteed... returns to weighted selection"), so assert eligibility
+    // via the live card state rather than requiring this exact draw to
+    // pick it.
     expect(sim.position).toBe(correctPosition + 5);
     const stillCoolingCard = sim.getCard(targetId);
-    expect(stillCoolingCard.correctCooldownUntilPosition).toBe(correctPosition + 6);
+    expect(stillCoolingCard.correctCooldownUntilPosition).toBe(correctPosition + 5);
   });
 
   it("emergency cooldown relaxation is the only approved exception, and is explicitly tagged as such", () => {

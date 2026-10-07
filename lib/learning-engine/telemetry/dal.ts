@@ -223,6 +223,10 @@ function toReviewEventRpcParams(payload: ReviewEventPersistencePayload): Record<
     p_repair_pending_before: payload.repairPendingBefore,
     p_is_repair_retry: payload.isRepairRetry,
     p_is_stage_advancing_success: payload.isStageAdvancingSuccess,
+    p_repair_pending_after: payload.repairPendingAfter,
+    p_repair_target_position_after: payload.repairTargetPositionAfter,
+    p_repair_hard_cap_position_after: payload.repairHardCapPositionAfter,
+    p_correct_cooldown_until_position_after: payload.correctCooldownUntilPositionAfter,
 
     p_fsrs_d_before: payload.fsrsDBefore,
     p_fsrs_s_before: payload.fsrsSBefore,
@@ -288,6 +292,10 @@ export interface PersistedReviewEventRow {
   readonly repair_pending_before: boolean | null;
   readonly is_repair_retry: boolean | null;
   readonly is_stage_advancing_success: boolean | null;
+  readonly repair_pending_after: boolean | null;
+  readonly repair_target_position_after: number | null;
+  readonly repair_hard_cap_position_after: number | null;
+  readonly correct_cooldown_until_position_after: number | null;
   readonly fsrs_d_before: number | null;
   readonly fsrs_s_before: number | null;
   readonly fsrs_r_before: number | null;

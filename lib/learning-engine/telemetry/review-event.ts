@@ -57,24 +57,35 @@
  * and its CURRENT one. If the previous presentation was at position P and
  * this answer commits at position N (the locked pre-answer deck
  * scheduler_position + 1 -- the position THIS committed answer itself
- * occupies, matching every other "N intervening cards" rule in the spec,
- * e.g. active-priority.ts's applyCorrectCooldown): `max(0, N - P - 1)`.
+ * occupies): `max(0, N - P - 1)`.
  *
  * `N` here is deliberately NOT the same value as `position.schedulerPosition`
  * below (the PRE-answer SelectionTrace echo -- see ReviewEventPosition's
- * own doc comment). Collapsing the two would either (a) undercount
- * cardsSinceLastSeen by exactly one relative to every other position rule
- * in the engine (the bug this fix closes -- confirmed by direct
- * comparison against applyCorrectCooldown's own documented N+1..N+5
- * boundary), or (b) require loosening `answer_events.scheduler_position`'s
- * existing cross-check against its linked SelectionTrace, which remains
- * untouched and must stay the selection-time value. This is why
- * `cardsSinceLastSeen` draws its "current" operand from
- * `exposure.currentPresentationSchedulerPosition` (the committed
- * post-increment position, supplied by the caller -- this module has no
- * clock/DB access, so it cannot compute `N` itself) rather than from
- * `position.schedulerPosition` -- see `deriveCardsSinceLastSeen` below and
- * `ReviewEventExposureContext`'s own doc comment for the full contract.
+ * own doc comment). Collapsing the two would require loosening
+ * `answer_events.scheduler_position`'s existing cross-check against its
+ * linked SelectionTrace, which remains untouched and must stay the
+ * selection-time value. This is why `cardsSinceLastSeen` draws its
+ * "current" operand from `exposure.currentPresentationSchedulerPosition`
+ * (the committed post-increment position, supplied by the caller -- this
+ * module has no clock/DB access, so it cannot compute `N` itself) rather
+ * than from `position.schedulerPosition` -- see `deriveCardsSinceLastSeen`
+ * below and `ReviewEventExposureContext`'s own doc comment for the full
+ * contract.
+ *
+ * NOTE (position-semantics fix, Stage 0 audit): an earlier revision of
+ * this comment cited `active-priority.ts`'s `applyCorrectCooldown` as a
+ * "matching" precedent for using this same post-increment `N` -- that
+ * citation was itself a symptom of the bug the fix closes.
+ * `applyCorrectCooldown` (and `createRepairObligation`'s `wrongPosition`)
+ * now correctly receive the PRE-answer presentation position instead (see
+ * `lib/learning-engine/runtime/prepare-answer.ts`'s `presentationPosition`),
+ * which is a DIFFERENT scale from this field's own `N`. The two concepts
+ * (cardsSinceLastSeen's committed-position distance vs. Repair/cooldown
+ * gate arithmetic's presentation-position distance) were never actually
+ * the same rule -- only the comment's analogy implied they were.
+ * `cardsSinceLastSeen` itself is unaffected and needs no change: it
+ * consistently compares two post-increment "committed position" values on
+ * both sides, so it was never subject to the off-by-one.
  *
  * `previousPresentationSchedulerPosition: number | null` remains the
  * authoritative previous value (from `user_card_progress.
@@ -88,6 +99,7 @@
 import { computeIntervalProgress } from "@/lib/learning-engine/fsrs/due-classification";
 import type { LearningEngineCardState } from "@/lib/learning-engine/state";
 import type { SelectionTrace } from "@/lib/learning-engine/scheduler/next-card";
+import type { RepairObligation } from "@/lib/learning-engine/repair-scheduler";
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
 
@@ -251,6 +263,18 @@ export interface BuildReviewEventInput {
   readonly beforeState: LearningEngineCardState;
   /** The authoritative card state immediately AFTER this answer's transition was applied. */
   readonly afterState: LearningEngineCardState;
+  /**
+   * Alpha-audit telemetry addition (Stage 0 audit): `prepareLearningEngineAnswer`'s
+   * own `repairObligationAfter` -- the complete repair obligation that
+   * exists AFTER this answer, or `null` if none does (whether none ever
+   * existed, or this answer's Correct just resolved one). Never
+   * re-derived here -- this module has no scheduler logic of its own, it
+   * only carries the already-computed fact through to the telemetry row
+   * (same discipline as `beforeState`/`afterState` above).
+   */
+  readonly repairObligationAfter: RepairObligation | null;
+  /** `prepareLearningEngineAnswer`'s own `correctCooldownUntilPositionAfter` -- the normal-Correct-cooldown gate in force AFTER this answer, or `null` if none is. */
+  readonly correctCooldownUntilPositionAfter: number | null;
 }
 
 /** One-to-one with the approved migration's additive `answer_events` v1 columns (camelCase mirror; lib/learning-engine/telemetry/dal.ts maps this to the RPC's snake_case parameters). */
@@ -292,6 +316,20 @@ export interface ReviewEventPersistencePayload {
   readonly repairPendingBefore: boolean;
   readonly isRepairRetry: boolean;
   readonly isStageAdvancingSuccess: boolean;
+
+  /**
+   * Alpha-audit telemetry additions (Stage 0 audit section 6): the
+   * minimum historical values needed to directly audit position-based
+   * Repair/cooldown behavior from a single answer_event row, without
+   * reconstructing them by replaying position differences across many
+   * rows (which is how the Stage 0 audit itself had to do it). All four
+   * are explicitly AFTER this answer's processing -- `repairPendingBefore`
+   * above already covers the BEFORE side.
+   */
+  readonly repairPendingAfter: boolean;
+  readonly repairTargetPositionAfter: number | null;
+  readonly repairHardCapPositionAfter: number | null;
+  readonly correctCooldownUntilPositionAfter: number | null;
 
   readonly fsrsDBefore: number | null;
   readonly fsrsSBefore: number | null;
@@ -393,12 +431,26 @@ export function deriveCardsSinceLastSeen(
  * string-matching -- a more robust definition (correct regardless of
  * which specific reason label the scheduler used) that still matches the
  * spec's semantics exactly:
- *   - `isRepairRetry`: this Correct/Wrong resolved a repair that was
- *     already pending (either the within-day `repairPending` flag, or the
- *     long-term `relearningPhase === "REPAIR_PENDING"` state) -- true for
- *     both `repair_target`/`repair_hard_cap` (within-day) presentations
- *     and the first Correct that resolves a FORGOTTEN card's
- *     REPAIR_PENDING phase.
+ *   - `isRepairRetry`: this PRESENTATION was a Repair retry -- the card
+ *     was already governed by an already-pending repair obligation
+ *     (either the within-day `repairPending` flag, or the long-term
+ *     `relearningPhase === "REPAIR_PENDING"` state) at the moment it was
+ *     answered. True for both `repair_target`/`repair_hard_cap`
+ *     (within-day) presentations and the relearning Correct/Wrong that
+ *     resolves/retries a FORGOTTEN card's REPAIR_PENDING phase --
+ *     regardless of whether the answer was Correct or Wrong (Stage 0
+ *     audit fix: an earlier revision gated this on `behavior.correct`,
+ *     making a Repair Wrong silently read as "not a repair retry" even
+ *     though `repairPendingBefore` was true -- confirmed against tester
+ *     951's real trace: 58/58 genuine repair presentations had
+ *     `repairPendingBefore = true`, but only the 9 Correct ones were
+ *     flagged `isRepairRetry = true`). Deliberately NOT gated on
+ *     `behavior.correct` -- whether the retry SUCCEEDED is a completely
+ *     separate fact (`isStageAdvancingSuccess`, or simply `behavior.correct`
+ *     itself alongside this field), never folded into this one.
+ *     Spaced Confirmation (`relearningPhase === "SPACED_CONFIRMATION_PENDING"`)
+ *     is deliberately excluded -- it is the step AFTER a Repair resolves,
+ *     not itself a Repair retry.
  *   - `isStageAdvancingSuccess`: a genuine learning_stage/card_status
  *     change caused by a Correct answer -- true for a normal stage-
  *     advancing Correct, the FRESH repair exception (which also advances
@@ -409,16 +461,28 @@ export function deriveCardsSinceLastSeen(
  *     lib/learning-engine/fsrs/lifecycle.ts), and every Wrong.
  */
 export function buildReviewEvent(input: BuildReviewEventInput): ReviewEventPersistencePayload {
-  const { identity, position, behavior, selection, goal, exposure, fsrs, mastery, policy, beforeState, afterState } =
-    input;
+  const {
+    identity,
+    position,
+    behavior,
+    selection,
+    goal,
+    exposure,
+    fsrs,
+    mastery,
+    policy,
+    beforeState,
+    afterState,
+    repairObligationAfter,
+    correctCooldownUntilPositionAfter,
+  } = input;
 
   const { intervalProgress, daysOverdue, scheduledIntervalSec } = deriveLongTermTiming(
     fsrs.elapsedDays,
     fsrs.scheduledIntervalDays,
   );
 
-  const isRepairRetry =
-    behavior.correct && (beforeState.repairPending || beforeState.relearningPhase === "REPAIR_PENDING");
+  const isRepairRetry = beforeState.repairPending || beforeState.relearningPhase === "REPAIR_PENDING";
   const isStageAdvancingSuccess =
     behavior.correct &&
     (beforeState.learningStage !== afterState.learningStage || beforeState.cardStatus !== afterState.cardStatus);
@@ -463,6 +527,11 @@ export function buildReviewEvent(input: BuildReviewEventInput): ReviewEventPersi
     repairPendingBefore: beforeState.repairPending,
     isRepairRetry,
     isStageAdvancingSuccess,
+
+    repairPendingAfter: afterState.repairPending,
+    repairTargetPositionAfter: repairObligationAfter?.targetPosition ?? null,
+    repairHardCapPositionAfter: repairObligationAfter?.hardCapPosition ?? null,
+    correctCooldownUntilPositionAfter,
 
     fsrsDBefore: fsrs.fsrsDBefore,
     fsrsSBefore: fsrs.fsrsSBefore,

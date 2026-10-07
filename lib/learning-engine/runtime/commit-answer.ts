@@ -362,6 +362,8 @@ function buildReviewEventPayload(
     policy: { policyVersion: context.deckState.policyVersion, fsrsVersion: LEARNING_ENGINE_FSRS_VERSION, parameterSetId: null, experimentAssignmentId: null },
     beforeState: cardStateFromContext(context.card),
     afterState: prepared.cardStateAfter,
+    repairObligationAfter: prepared.repairObligationAfter,
+    correctCooldownUntilPositionAfter: prepared.correctCooldownUntilPositionAfter,
   });
 }
 
@@ -372,6 +374,10 @@ function reviewEventRpcPayload(payload: ReviewEventPersistencePayload): Record<s
     secondsSinceLastSeen: payload.secondsSinceLastSeen,
     isRepairRetry: payload.isRepairRetry,
     isStageAdvancingSuccess: payload.isStageAdvancingSuccess,
+    repairPendingAfter: payload.repairPendingAfter,
+    repairTargetPositionAfter: payload.repairTargetPositionAfter,
+    repairHardCapPositionAfter: payload.repairHardCapPositionAfter,
+    correctCooldownUntilPositionAfter: payload.correctCooldownUntilPositionAfter,
     fsrsDBefore: payload.fsrsDBefore,
     fsrsSBefore: payload.fsrsSBefore,
     fsrsRBefore: payload.fsrsRBefore,

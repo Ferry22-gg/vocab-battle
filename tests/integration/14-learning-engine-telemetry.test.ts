@@ -208,6 +208,8 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
       },
       beforeState: before,
       afterState: after,
+      repairObligationAfter: null,
+      correctCooldownUntilPositionAfter: null,
     });
 
     const persisted = await persistReviewEvent(reviewPayload);
@@ -262,6 +264,8 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
         policy: { policyVersion: "learning-engine-v1.0", fsrsVersion: "ts-fsrs@5.4.2", parameterSetId: null, experimentAssignmentId: null },
         beforeState: before,
         afterState: after,
+        repairObligationAfter: null,
+        correctCooldownUntilPositionAfter: null,
       });
     }
 
@@ -330,6 +334,8 @@ describe("Learning Engine v1 Phase 8 telemetry persistence (real local Supabase)
       policy: { policyVersion: "learning-engine-v1.0", fsrsVersion: "ts-fsrs@5.4.2", parameterSetId: null, experimentAssignmentId: null },
       beforeState: before,
       afterState: after,
+      repairObligationAfter: null,
+      correctCooldownUntilPositionAfter: null,
     });
 
     await expect(persistReviewEvent(payload)).rejects.toSatisfy(

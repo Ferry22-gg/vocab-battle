@@ -109,7 +109,14 @@ export interface PrepareLearningEngineAnswerInput {
   /** The claim's own SelectionTrace.selectionReason -- the dispatch key (see module header). */
   readonly selectionReason: SelectionReason;
   readonly desiredRetention: number;
-  /** claim.schedulerPosition + 1 -- the position this committed answer occupies. Already deterministic from already-trusted claim data; no DB round-trip needed to compute it. */
+  /**
+   * claim.schedulerPosition + 1 -- the position this committed answer
+   * occupies. Already deterministic from already-trusted claim data; no DB
+   * round-trip needed to compute it. NOT the value to use for Repair/
+   * Correct-cooldown gate arithmetic directly -- see this function's own
+   * `presentationPosition` derivation below for the canonical position
+   * convention those use instead.
+   */
   readonly newSchedulerPosition: number;
   readonly correct: boolean;
   readonly responseTimeMs: number;
@@ -169,6 +176,46 @@ function computeMasteryXp(
 export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerInput): PrepareLearningEngineAnswerResult {
   const { cardId, cardState, fsrsCard, selectionReason, desiredRetention, newSchedulerPosition, correct, random, now } = input;
 
+  // ===========================================================================
+  // CANONICAL POSITION CONVENTION (position-semantics fix -- Stage 0 audit,
+  // confirmed real-trace off-by-one in Repair timing and, structurally, in
+  // Correct cooldown)
+  // ===========================================================================
+  // One coherent coordinate system for EVERY gate-arithmetic position this
+  // function computes (Repair wrongPosition/target/hard-cap, Correct
+  // cooldown-until), stated once, used everywhere below:
+  //
+  //   If a card is CLAIMED (and therefore presented) at scheduler_position
+  //   = N, the presentation/answer is considered to have occurred AT N for
+  //   gate arithmetic. Only once the answer commits does scheduler_position
+  //   become N+1.
+  //
+  // `newSchedulerPosition` (this function's own input, `claim.
+  // schedulerPosition + 1` per its own doc comment above) is the POST-answer
+  // value -- correct for whatever needs "the position this committed answer
+  // occupies" (e.g. telemetry's cardsSinceLastSeen/last_presented_scheduler_
+  // position), but it is NOT N. `presentationPosition` below undoes that one
+  // step back to N -- the value every gate check downstream
+  // (isRepairTargetReached/isRepairHardCapReached in repair-scheduler.ts,
+  // isEligibleForNormalSelection in active-priority.ts) actually compares
+  // against, via `schedulerPosition = snapshot.deckState.schedulerPosition`
+  // in scheduler/next-card.ts -- itself the PRE-answer persisted value, i.e.
+  // exactly N for the draw being evaluated. Before this fix, `wrongPosition`/
+  // the Correct-cooldown `position` argument were constructed from
+  // `newSchedulerPosition` (N+1) directly, so createRepairObligation's own
+  // `+ gap + 1` / `+ 6 + 1` and applyCorrectCooldown's own `+ 5 + 1` formulas
+  // (both already correct in isolation, and already correctly unit-tested
+  // in isolation -- see repair-scheduler.ts:132-146 and active-priority.ts's
+  // own doc comments) were applied one position later than the gate check's
+  // own scale expects -- requiring one MORE real intervening answered card
+  // than the spec's 3/6/5, confirmed against tester 951's real Stage 0 trace
+  // (23/23 repair_target episodes at 4-6 intervening cards, never 3; 35/35
+  // repair_hard_cap episodes at exactly 7, never 6).
+  //
+  // Neither repair-scheduler.ts's nor active-priority.ts's own formulas
+  // change for this fix -- only the value passed in from here does.
+  const presentationPosition = newSchedulerPosition - 1;
+
   const battle = calculateBattleResult({
     correct,
     responseTimeMs: input.responseTimeMs,
@@ -198,10 +245,10 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
 
     if (correct) {
       cardStateAfter = applyNormalCorrect(presentedState);
-      correctCooldownUntilPositionAfter = applyCorrectCooldown(newSchedulerPosition);
+      correctCooldownUntilPositionAfter = applyCorrectCooldown(presentationPosition);
     } else {
       cardStateAfter = applyWrong(presentedState);
-      repairObligationAfter = createRepairObligation({ cardId, wrongPosition: newSchedulerPosition, random });
+      repairObligationAfter = createRepairObligation({ cardId, wrongPosition: presentationPosition, random });
     }
   }
 
@@ -229,11 +276,11 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
   ) {
     if (cardState.cardStatus === "LEARNING") {
       if (correct) {
-        const result = resolveOrdinaryRepairCorrect(cardState, newSchedulerPosition);
+        const result = resolveOrdinaryRepairCorrect(cardState, presentationPosition);
         cardStateAfter = result.cardState;
         correctCooldownUntilPositionAfter = result.nextCorrectCooldownUntilPosition;
       } else {
-        const result = resolveOrdinaryRepairWrong({ cardState, cardId, wrongPosition: newSchedulerPosition, random });
+        const result = resolveOrdinaryRepairWrong({ cardState, cardId, wrongPosition: presentationPosition, random });
         cardStateAfter = result.cardState;
         repairObligationAfter = result.repairObligation;
       }
@@ -243,11 +290,11 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
         `repair-retry selectionReason "${selectionReason}" requires cardStatus LEARNING, or FORGOTTEN with relearningPhase REPAIR_PENDING`,
       );
       if (correct) {
-        const result = resolveRelearningRepairCorrect(cardState, newSchedulerPosition);
+        const result = resolveRelearningRepairCorrect(cardState, presentationPosition);
         cardStateAfter = { ...result.cardState, ...result.clearedRepairFields };
         correctCooldownUntilPositionAfter = result.nextCorrectCooldownUntilPosition;
       } else {
-        const result = resolveRelearningRepairWrong({ cardState, cardId, wrongPosition: newSchedulerPosition, random });
+        const result = resolveRelearningRepairWrong({ cardState, cardId, wrongPosition: presentationPosition, random });
         cardStateAfter = result.cardState;
         repairObligationAfter = result.repairObligation;
       }
@@ -273,7 +320,7 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
     if (correct) {
       cardStateAfter = applySpacedCorrect(cardState);
     } else {
-      const result = resolveSpacedConfirmationWrong({ cardState, cardId, wrongPosition: newSchedulerPosition, random });
+      const result = resolveSpacedConfirmationWrong({ cardState, cardId, wrongPosition: presentationPosition, random });
       cardStateAfter = result.cardState;
       repairObligationAfter = result.repairObligation;
     }
@@ -316,7 +363,7 @@ export function prepareLearningEngineAnswer(input: PrepareLearningEngineAnswerIn
       cardStateAfter = { ...result.cardState, repairPending: true };
       fsrsUpdate = result.fsrsUpdate;
       fsrsGrade = result.grade;
-      repairObligationAfter = createRepairObligation({ cardId, wrongPosition: newSchedulerPosition, random });
+      repairObligationAfter = createRepairObligation({ cardId, wrongPosition: presentationPosition, random });
     }
   } else {
     invariant(false, `unhandled selectionReason "${selectionReason}" -- no answerable claim should ever report "no_card_all_unavailable"`);

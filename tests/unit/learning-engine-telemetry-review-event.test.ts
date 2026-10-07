@@ -17,7 +17,9 @@ import {
   applyNormalCorrect,
   applyQualifyingFsrsCorrect,
   applyRelearningRepairCorrect,
+  applyRelearningRepairRetryWrong,
   applyRepairCorrect,
+  applyRepairRetryWrong,
   applySpacedCorrect,
   applyWrong,
 } from "@/lib/learning-engine/transitions";
@@ -124,6 +126,8 @@ function build(
     policy: POLICY,
     beforeState,
     afterState,
+    repairObligationAfter: null,
+    correctCooldownUntilPositionAfter: null,
     ...rest,
   });
 }
@@ -161,6 +165,34 @@ describe("buildReviewEvent", () => {
     expect(after.repairPending).toBe(true);
     expect(event.repairPendingBefore).toBe(false);
     expect(event.isRepairRetry).toBe(false);
+    expect(event.isStageAdvancingSuccess).toBe(false);
+  });
+
+  it("3b. Stage 0 audit fix: Repair retry WRONG is still isRepairRetry = true -- the missing case that let the original bug through (previously gated on behavior.correct, silently reading false for every Repair Wrong)", () => {
+    const wronged: LearningEngineCardState = { ...INITIAL_CARD_STATE, cardStatus: "LEARNING", learningStage: "LEARNING_1" };
+    const before = applyWrong(wronged); // repairPending now true -- a genuine Repair presentation retried
+    const after = applyRepairRetryWrong(before);
+    const event = build({ beforeState: before, afterState: after, correct: false, selection: activeSelection({ selectionReason: "repair_target", cardPriorityWeight: null }) });
+
+    expect(before.repairPending).toBe(true);
+    expect(event.repairPendingBefore).toBe(true);
+    expect(event.isRepairRetry).toBe(true); // true for BOTH Correct (test 4) and Wrong (this test) on a genuine repair retry
+    expect(event.isStageAdvancingSuccess).toBe(false); // a Wrong is never stage-advancing
+  });
+
+  it("3c. Stage 0 audit fix: relearning Repair retry WRONG is also isRepairRetry = true", () => {
+    const wronged: LearningEngineCardState = { ...INITIAL_CARD_STATE, cardStatus: "ACQUIRED", poolStatus: "OUTSIDE" };
+    // applyLongTermWrong itself never sets repairPending (prepare-answer.ts
+    // merges `repairPending: true` in afterward for this one path -- see
+    // its own long-term-Wrong branch) -- mirrored here the same way.
+    const before: LearningEngineCardState = { ...applyLongTermWrong(wronged), repairPending: true }; // FORGOTTEN/REPAIR_PENDING
+    const after = applyRelearningRepairRetryWrong(before);
+    const event = build({ beforeState: before, afterState: after, correct: false, selection: activeSelection({ selectionReason: "repair_target", cardPriorityWeight: null }) });
+
+    expect(before.relearningPhase).toBe("REPAIR_PENDING");
+    expect(before.repairPending).toBe(true); // both flags move together for a FORGOTTEN+REPAIR_PENDING card -- applyRelearningRepairRetryWrong's own precondition requires it
+    expect(event.repairPendingBefore).toBe(true);
+    expect(event.isRepairRetry).toBe(true);
     expect(event.isStageAdvancingSuccess).toBe(false);
   });
 

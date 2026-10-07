@@ -246,7 +246,11 @@ describe("commitLearningEngineAnswer", () => {
 
     const callInput = commitLearningEngineAnswerRpc.mock.calls[0][0];
     expect(callInput.repairObligationAfter).not.toBeNull();
-    expect(callInput.repairObligationAfter.wrongPosition).toBe(11); // claim.schedulerPosition (10) + 1
+    // Position-semantics fix: wrongPosition is the claim's own PRE-answer
+    // presentation position (claim.schedulerPosition = 10 -- the position
+    // this card was actually presented/claimed at), not
+    // newSchedulerPosition (11, the POST-answer committed position).
+    expect(callInput.repairObligationAfter.wrongPosition).toBe(10); // claim.schedulerPosition
     expect(callInput.cardAfter.fsrsTouched).toBe(false);
   });
 

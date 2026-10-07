@@ -349,7 +349,7 @@ export class SchedulerSimulation {
 
     // 7. Apply the scripted answer through existing pure transition/FSRS/
     // repair helpers -- never reimplemented here.
-    this.applyScriptedAnswer(decision, resolvedAnswer, positionAtDrawTime, newPosition);
+    this.applyScriptedAnswer(decision, resolvedAnswer, positionAtDrawTime);
 
     // 8. Section 3 of the Phase 7 brief: re-evaluate the historical unlock
     // after whatever this answer just changed (e.g. a qualifying FSRS
@@ -372,7 +372,7 @@ export class SchedulerSimulation {
     return results;
   }
 
-  private applyScriptedAnswer(decision: NextCardDecision, correct: boolean, positionAtDrawTime: number, newPosition: number): void {
+  private applyScriptedAnswer(decision: NextCardDecision, correct: boolean, presentationPosition: number): void {
     const cardId = decision.cardId!;
     const card = this.getCard(cardId);
     const reason = decision.selectionReason;
@@ -383,15 +383,15 @@ export class SchedulerSimulation {
       reason === "active_weighted_selection" ||
       reason === "emergency_cooldown_relaxation"
     ) {
-      this.applyOrdinaryActiveAnswer(card, correct, newPosition);
+      this.applyOrdinaryActiveAnswer(card, correct, presentationPosition);
       return;
     }
 
     if (reason === "repair_target" || reason === "repair_hard_cap") {
       if (correct) {
-        this.applyRepairRetryCorrect(card, newPosition);
+        this.applyRepairRetryCorrect(card, presentationPosition);
       } else {
-        this.applyRepairRetryWrong(card, newPosition);
+        this.applyRepairRetryWrong(card, presentationPosition);
       }
       return;
     }
@@ -400,7 +400,7 @@ export class SchedulerSimulation {
       if (correct) {
         this.applySpacedConfirmationCorrect(card);
       } else {
-        this.applySpacedConfirmationWrongAnswer(card, newPosition);
+        this.applySpacedConfirmationWrongAnswer(card, presentationPosition);
       }
       return;
     }
@@ -415,51 +415,63 @@ export class SchedulerSimulation {
         if (correct) {
           this.applySpacedConfirmationCorrect(card);
         } else {
-          this.applySpacedConfirmationWrongAnswer(card, newPosition);
+          this.applySpacedConfirmationWrongAnswer(card, presentationPosition);
         }
       } else if (correct) {
-        this.applyRepairRetryCorrect(card, newPosition);
+        this.applyRepairRetryCorrect(card, presentationPosition);
       } else {
-        this.applyRepairRetryWrong(card, newPosition);
+        this.applyRepairRetryWrong(card, presentationPosition);
       }
       return;
     }
 
     if (reason === "due_weighted_selection" || reason === "critical_due_interrupt") {
-      this.applyFsrsDueAnswer(card, correct, newPosition);
+      this.applyFsrsDueAnswer(card, correct, presentationPosition);
       return;
     }
 
     if (reason === "near_due_weighted_selection") {
-      this.applyNearDueAnswer(card, correct, newPosition);
+      this.applyNearDueAnswer(card, correct, presentationPosition);
       return;
     }
 
     if (reason === "random_mastered_shuffle_bag") {
-      this.applyRandomMasteredAnswer(card, correct, newPosition);
+      this.applyRandomMasteredAnswer(card, correct, presentationPosition);
       return;
     }
 
     invariant(false, `applyScriptedAnswer: unreachable selectionReason ${reason} (cardId is non-null, so no_card_all_unavailable cannot occur here)`);
-    void positionAtDrawTime;
   }
 
-  private applyOrdinaryActiveAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {
+  /**
+   * Position-semantics fix (Stage 0 audit, mirrors
+   * lib/learning-engine/runtime/prepare-answer.ts's own
+   * `presentationPosition`): gate arithmetic (Repair wrongPosition/
+   * target/hard-cap, Correct cooldown-until) uses `presentationPosition`
+   * -- the PRE-answer position this draw's claim actually occupies
+   * (`positionAtDrawTime` from `step()`), matching the canonical
+   * convention "a card claimed at scheduler_position = N is presented/
+   * answered AT N for gate arithmetic" -- never the POST-answer
+   * `newPosition` this harness also tracks for OTHER, genuinely
+   * post-increment concepts (e.g. `lastCriticalDuePosition`).
+   */
+  private applyOrdinaryActiveAnswer(card: SchedulableCardRow, correct: boolean, presentationPosition: number): void {
     const presentedState = card.cardStatus === "NEW" ? applyFirstPresentation(card) : card;
 
     if (correct) {
       const cardState = applyNormalCorrect(presentedState);
-      this.setCard(card.cardId, { ...card, ...cardState, correctCooldownUntilPosition: applyCorrectCooldown(newPosition) });
+      this.setCard(card.cardId, { ...card, ...cardState, correctCooldownUntilPosition: applyCorrectCooldown(presentationPosition) });
       return;
     }
 
     const cardState = applyWrong(presentedState);
-    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...cardState, repairObligation: obligation });
   }
 
-  private applyRepairRetryCorrect(card: SchedulableCardRow, newPosition: number): void {
-    const result = card.cardStatus === "FORGOTTEN" ? resolveRelearningRepairCorrect(card, newPosition) : resolveOrdinaryRepairCorrect(card, newPosition);
+  private applyRepairRetryCorrect(card: SchedulableCardRow, presentationPosition: number): void {
+    const result =
+      card.cardStatus === "FORGOTTEN" ? resolveRelearningRepairCorrect(card, presentationPosition) : resolveOrdinaryRepairCorrect(card, presentationPosition);
     this.setCard(card.cardId, {
       ...card,
       ...result.cardState,
@@ -489,11 +501,11 @@ export class SchedulerSimulation {
    * regresses the acquisition stage (ordinary) and never advances to
    * SPACED_CONFIRMATION_PENDING (relearning).
    */
-  private applyRepairRetryWrong(card: SchedulableCardRow, newPosition: number): void {
+  private applyRepairRetryWrong(card: SchedulableCardRow, presentationPosition: number): void {
     const result =
       card.cardStatus === "FORGOTTEN"
-        ? resolveRelearningRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random })
-        : resolveOrdinaryRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+        ? resolveRelearningRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: presentationPosition, random: this.random })
+        : resolveOrdinaryRepairWrong({ cardState: card, cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, repairObligation: result.repairObligation });
   }
 
@@ -504,12 +516,12 @@ export class SchedulerSimulation {
    * Spaced Correct again from scratch, never straight into another Spaced
    * Confirmation.
    */
-  private applySpacedConfirmationWrongAnswer(card: SchedulableCardRow, newPosition: number): void {
-    const result = resolveSpacedConfirmationWrong({ cardState: card, cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+  private applySpacedConfirmationWrongAnswer(card: SchedulableCardRow, presentationPosition: number): void {
+    const result = resolveSpacedConfirmationWrong({ cardState: card, cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, repairObligation: result.repairObligation, correctCooldownUntilPosition: null });
   }
 
-  private applyFsrsDueAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {
+  private applyFsrsDueAnswer(card: SchedulableCardRow, correct: boolean, presentationPosition: number): void {
     if (correct) {
       const result = resolveQualifyingFsrsCorrect({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
       const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
@@ -519,11 +531,11 @@ export class SchedulerSimulation {
 
     const result = resolveLongTermWrong({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
     const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
-    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard, repairObligation: obligation });
   }
 
-  private applyNearDueAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {
+  private applyNearDueAnswer(card: SchedulableCardRow, correct: boolean, presentationPosition: number): void {
     if (correct) {
       const result = resolveNearDueCorrect({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
       const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
@@ -533,7 +545,7 @@ export class SchedulerSimulation {
 
     const result = resolveLongTermWrong({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
     const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
-    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard, repairObligation: obligation });
   }
 
@@ -547,7 +559,7 @@ export class SchedulerSimulation {
    * Near-Due Wrong -- never a second, lighter free-play-specific failure
    * state machine.
    */
-  private applyRandomMasteredAnswer(card: SchedulableCardRow, correct: boolean, newPosition: number): void {
+  private applyRandomMasteredAnswer(card: SchedulableCardRow, correct: boolean, presentationPosition: number): void {
     if (correct) {
       const result = resolveRandomMasteredCorrect({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
       const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
@@ -557,7 +569,7 @@ export class SchedulerSimulation {
 
     const result = resolveRandomMasteredWrong({ card: card.fsrsCard, cardState: card, now: this.now, desiredRetention: this.desiredRetention });
     const nextFsrsCard = progressToFsrsCard(result.fsrsUpdate, this.now);
-    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: newPosition, random: this.random });
+    const obligation = createRepairObligation({ cardId: card.cardId, wrongPosition: presentationPosition, random: this.random });
     this.setCard(card.cardId, { ...card, ...result.cardState, fsrsCard: nextFsrsCard, repairObligation: obligation });
   }
 }

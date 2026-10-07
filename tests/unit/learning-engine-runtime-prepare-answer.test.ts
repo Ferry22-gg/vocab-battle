@@ -66,7 +66,14 @@ describe("prepareLearningEngineAnswer -- ordinary within-day Active (sections 9-
     });
     expect(result.cardStateAfter.cardStatus).toBe("LEARNING");
     expect(result.cardStateAfter.learningStage).toBe("LEARNING_1");
-    expect(result.correctCooldownUntilPositionAfter).toBe(10 + 5 + 1);
+    // Position-semantics fix: gate arithmetic uses presentationPosition
+    // (newSchedulerPosition - 1 = 9, the claim's own PRE-answer position,
+    // i.e. the position this card was actually presented/claimed at) --
+    // never newSchedulerPosition (10, the POST-answer committed position)
+    // directly. 9 + 5 + 1 = 15, matching the canonical "Correct at
+    // presentation position N -> N+1..N+5 blocked -> N+6 eligible" rule
+    // with N=9.
+    expect(result.correctCooldownUntilPositionAfter).toBe(9 + 5 + 1);
     expect(result.repairObligationAfter).toBeNull();
     expect(result.fsrsUpdate).toBeNull();
     expect(result.battle.enemyHpAfter).toBeLessThanOrEqual(100);
@@ -85,7 +92,11 @@ describe("prepareLearningEngineAnswer -- ordinary within-day Active (sections 9-
     expect(result.cardStateAfter.learningStage).toBe("FRESH");
     expect(result.cardStateAfter.repairPending).toBe(true);
     expect(result.repairObligationAfter).not.toBeNull();
-    expect(result.repairObligationAfter!.wrongPosition).toBe(10);
+    // Position-semantics fix: wrongPosition is the claim's own PRE-answer
+    // presentation position (presentationPosition = newSchedulerPosition
+    // - 1 = 9), not newSchedulerPosition (10) itself -- see this file's
+    // other updated assertion above for the full rationale.
+    expect(result.repairObligationAfter!.wrongPosition).toBe(9);
     expect(result.correctCooldownUntilPositionAfter).toBeNull();
     expect(result.battle.damage).toBe(0);
   });
@@ -184,7 +195,8 @@ describe("prepareLearningEngineAnswer -- repair retry (sections 12.2/12.5)", () 
     expect(result.cardStateAfter.learningStage).toBe("LEARNING_1");
     expect(result.cardStateAfter.repairPending).toBe(false);
     expect(result.repairObligationAfter).toBeNull();
-    expect(result.correctCooldownUntilPositionAfter).toBe(10 + 5 + 1);
+    // Position-semantics fix -- see the "NEW Correct" test above.
+    expect(result.correctCooldownUntilPositionAfter).toBe(9 + 5 + 1);
   });
 
   it("ordinary Repair Wrong: stage unchanged, old obligation replaced by a fresh one anchored at the new position", () => {
@@ -201,7 +213,8 @@ describe("prepareLearningEngineAnswer -- repair retry (sections 12.2/12.5)", () 
     expect(result.cardStateAfter.learningStage).toBe("LEARNING_1");
     expect(result.cardStateAfter.repairPending).toBe(true);
     expect(result.repairObligationAfter).not.toBeNull();
-    expect(result.repairObligationAfter!.wrongPosition).toBe(10);
+    // Position-semantics fix -- see the "NEW Wrong" test above.
+    expect(result.repairObligationAfter!.wrongPosition).toBe(9);
     expect(result.correctCooldownUntilPositionAfter).toBeNull();
   });
 });
