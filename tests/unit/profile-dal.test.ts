@@ -12,9 +12,16 @@ afterEach(() => {
 });
 
 describe("getProfileStats", () => {
-  it("reads total_xp/level/current_streak/total_enemies_defeated and maps them", async () => {
+  it("reads total_xp/level/current_streak/longest_streak/total_enemies_defeated/selected_deck_id and maps them", async () => {
     const { chain } = createQueryChainMock({
-      data: { total_xp: 450, level: 3, current_streak: 5, total_enemies_defeated: 12 },
+      data: {
+        total_xp: 450,
+        level: 3,
+        current_streak: 5,
+        longest_streak: 9,
+        total_enemies_defeated: 12,
+        selected_deck_id: "deck-1",
+      },
       error: null,
     });
     vi.mocked(createClient).mockResolvedValue({ from: () => chain } as never);
@@ -23,7 +30,9 @@ describe("getProfileStats", () => {
       totalXp: 450,
       level: 3,
       currentStreak: 5,
+      longestStreak: 9,
       totalEnemiesDefeated: 12,
+      selectedDeckId: "deck-1",
     });
   });
 

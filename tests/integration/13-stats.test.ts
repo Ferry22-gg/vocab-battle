@@ -51,12 +51,36 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       expect(stats.totalXp).toBe(0);
       expect(stats.currentStreak).toBe(0);
       expect(stats.totalEnemiesDefeated).toBe(0);
-      expect(stats.cardsMastered).toBe(0);
+      expect(stats.wordsMasteredLifetime).toBe(0);
+      expect(stats.wordsLearnedLifetime).toBe(0);
       expect(stats.accuracyPercent).toBeNull();
       expect(stats.bestCombo).toBeNull();
+      expect(stats.longestStreak).toBe(0);
+      expect(stats.mostAnswersInADay).toBe(0);
+      expect(stats.mostXpInADay).toBe(0);
+      expect(stats.studyDays).toBe(0);
+      expect(stats.todayAnswers).toBe(0);
+      expect(stats.todayWordsStudied).toBe(0);
+      expect(stats.todayWordsLearned).toBe(0);
+      expect(stats.todayXp).toBe(0);
+      expect(stats.todayStudyTimeMs).toBe(0);
       expect(stats.weeklyActivity).toHaveLength(7);
-      expect(stats.weeklyActivity.every((day) => day.enemiesDefeated === 0)).toBe(true);
-      expect(stats.weeklyActivity.at(-1)?.date).toBe(todayInTokyo());
+      expect(stats.weeklyActivity.every((day) => day.answers === 0)).toBe(true);
+      // Stats Alpha polish A1: the week is the current Monday->Sunday
+      // calendar week, so today's own slot is wherever today falls in
+      // that week -- not necessarily the last entry (a future day in the
+      // same week, rendered as a zero bar, can come after it).
+      expect(stats.weeklyActivity.some((day) => day.date === todayInTokyo())).toBe(true);
+      expect(stats.weeklyActivity[0]!.date <= todayInTokyo()).toBe(true); // Monday (first entry) is never after today
+
+      // A freshly onboarded tester has a full deck of NEW cards and no
+      // activity yet -- Learning Progress must still render a real,
+      // non-null snapshot (never missing/blank for a brand-new tester).
+      expect(stats.learningProgress).not.toBeNull();
+      expect(stats.learningProgress?.headlineLearnedCount).toBe(0);
+      expect(stats.learningProgress?.masteredCount).toBe(0);
+      expect(stats.learningProgress?.totalCards).toBeGreaterThan(0);
+      expect(stats.learningProgress?.newCount).toBe(stats.learningProgress?.totalCards);
     });
   });
 
@@ -107,7 +131,9 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       // Seed yesterday's aggregate directly (no real RPC call ever
       // touches a non-"today" daily_user_stats row) to verify the 7-day
       // window groups a past day's activity into the correct slot.
-      await upsertDailyUserStatsAdmin(testerA.userId, yesterdayInTokyo(), { enemies_defeated: 3 });
+      // total_answers (not enemies_defeated) is the Alpha Stats redesign's
+      // "This Week" metric.
+      await upsertDailyUserStatsAdmin(testerA.userId, yesterdayInTokyo(), { total_answers: 3 });
     });
 
     it("Level/XP/Streak/lifetime Enemies Defeated match the same profiles row Home reads", async () => {
@@ -121,18 +147,43 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       expect(stats.totalEnemiesDefeated).toBeGreaterThan(0); // the lethal-HP answer actually defeated an enemy
     });
 
-    it("Cards Mastered counts the real LEARNED transition", async () => {
+    it("Words Mastered (lifetime) counts the real LEARNED transition", async () => {
       const stats = await getStatsSummary();
-      expect(stats.cardsMastered).toBe(1);
+      expect(stats.wordsMasteredLifetime).toBe(1);
     });
 
-    it("Accuracy reflects real committed answers (1 correct / 2 total today = 50%)", async () => {
+    it("Learning Progress reflects the real current card_status for this deck (1 Mastered, 1 Learning, rest New)", async () => {
+      const stats = await getStatsSummary();
+      expect(stats.learningProgress).not.toBeNull();
+      expect(stats.learningProgress?.masteredCount).toBe(1);
+      expect(stats.learningProgress?.learningCount).toBe(1);
+      expect(stats.learningProgress?.headlineLearnedCount).toBe(1); // ACQUIRED(0) + LEARNED(1) -- the legacy engine masters LEARNING -> LEARNED directly, with no ACQUIRED intermediate stage
+      const progress = stats.learningProgress!;
+      expect(progress.newCount + progress.learningCount + progress.learnedCount + progress.masteredCount).toBe(progress.totalCards);
+    });
+
+    it("Today's Answers/Words Studied reflect the two real committed answers", async () => {
+      const stats = await getStatsSummary();
+      expect(stats.todayAnswers).toBe(2);
+      expect(stats.todayWordsStudied).toBe(2); // two distinct cards (cardId, secondCardId)
+      // The legacy mastery transition (LEARNING -> LEARNED) is not an
+      // ACQUIRED transition, so it correctly does not count as "Words
+      // Learned" under this feature's strict definition (see
+      // lib/stats/aggregate.ts's computeTodayWordsLearned doc comment).
+      expect(stats.todayWordsLearned).toBe(0);
+    });
+
+    it("Accuracy (internal/telemetry only, never rendered) reflects real committed answers lifetime-wide", async () => {
       const stats = await getStatsSummary();
       const todayStats = await getDailyUserStatsAdmin(testerA.userId, todayInTokyo());
 
       expect(todayStats.total_answers).toBe(2);
       expect(todayStats.correct_answers).toBe(1);
-      expect(stats.accuracyPercent).toBe(50);
+      // accuracyPercent is lifetime-scoped (every daily_user_stats row,
+      // not just today) -- 1 correct out of (2 today + 3 seeded
+      // yesterday) = 20%. Still computed for internal/telemetry
+      // continuity; no component in app/stats/ renders it.
+      expect(stats.accuracyPercent).toBe(20);
     });
 
     it("Best Combo reflects the real per-day longest_combo (one correct answer = combo 1)", async () => {
@@ -140,12 +191,37 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       expect(stats.bestCombo).toBe(1);
     });
 
-    it("Weekly activity groups today's and yesterday's enemies_defeated into the correct slots", async () => {
+    it("Weekly activity groups today's real answers into today's own slot (wherever today falls in the Monday->Sunday week), and yesterday's seeded activity into yesterday's slot IF yesterday is in the same calendar week", async () => {
       const stats = await getStatsSummary();
-      expect(stats.weeklyActivity.at(-1)?.date).toBe(todayInTokyo());
-      expect(stats.weeklyActivity.at(-1)?.enemiesDefeated).toBeGreaterThan(0);
-      expect(stats.weeklyActivity.at(-2)?.date).toBe(yesterdayInTokyo());
-      expect(stats.weeklyActivity.at(-2)?.enemiesDefeated).toBe(3);
+
+      const todayEntry = stats.weeklyActivity.find((day) => day.date === todayInTokyo());
+      expect(todayEntry).toBeDefined();
+      expect(todayEntry!.answers).toBe(2); // the two real committed answers today
+
+      // Stats Alpha polish A1: "This Week" is the current Monday->Sunday
+      // calendar week, not a rolling last-7-days window -- yesterday is
+      // only part of the SAME week unless today is itself a Monday (in
+      // which case yesterday, Sunday, correctly belongs to last week and
+      // must be absent here; that absence is itself the correct,
+      // intended behavior, not a gap).
+      const yesterdayEntry = stats.weeklyActivity.find((day) => day.date === yesterdayInTokyo());
+      if (yesterdayEntry) {
+        expect(yesterdayEntry.answers).toBe(3); // seeded directly above
+      } else {
+        expect(stats.weeklyActivity[0]?.date).toBe(todayInTokyo()); // today IS Monday -- the week's own first entry
+      }
+    });
+
+    it("Study Days counts today and yesterday (2 distinct active days)", async () => {
+      const stats = await getStatsSummary();
+      expect(stats.studyDays).toBe(2);
+    });
+
+    it("Most Answers in a Day / Most XP in a Day reflect the real per-day maxima", async () => {
+      const stats = await getStatsSummary();
+      const today = await getDailyUserStatsAdmin(testerA.userId, todayInTokyo());
+      expect(stats.mostAnswersInADay).toBeGreaterThanOrEqual(3); // max(today=2, yesterday=3)
+      expect(stats.mostXpInADay).toBeGreaterThanOrEqual(today!.xp_gained as number);
     });
   });
 
@@ -162,10 +238,12 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       const statsB = await getStatsSummary();
 
       expect(statsB.totalEnemiesDefeated).toBe(0);
-      expect(statsB.cardsMastered).toBe(0);
+      expect(statsB.wordsMasteredLifetime).toBe(0);
       expect(statsB.accuracyPercent).toBeNull();
       expect(statsB.bestCombo).toBeNull();
-      expect(statsB.weeklyActivity.every((day) => day.enemiesDefeated === 0)).toBe(true);
+      expect(statsB.weeklyActivity.every((day) => day.answers === 0)).toBe(true);
+      expect(statsB.learningProgress?.masteredCount).toBe(0);
+      expect(statsB.learningProgress?.learningCount).toBe(0);
     });
 
     it("tester A's Stats are unaffected by tester B's (empty) read", async () => {
@@ -173,7 +251,7 @@ describe("Stats summary (real commit_answer_transaction + RLS)", () => {
       const statsA = await getStatsSummary();
 
       expect(statsA.totalEnemiesDefeated).toBeGreaterThan(0);
-      expect(statsA.cardsMastered).toBe(1);
+      expect(statsA.wordsMasteredLifetime).toBe(1);
     });
   });
 });

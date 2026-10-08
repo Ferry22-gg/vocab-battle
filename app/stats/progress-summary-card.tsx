@@ -1,10 +1,12 @@
 /**
- * Progress Summary card (P3 Stats spec section 4): Level, XP-to-next-level
- * progress bar, Day Streak. Deliberately reuses the same `computeLevelProgress`/
- * `xpProgressPercent` math and `profiles.level`/`total_xp`/`current_streak`
- * source Home's HomeHeader already renders (app/home/home-header.tsx) --
- * this card never re-derives level/XP itself, only lays the same numbers
- * out larger, as this screen's lead card.
+ * Top Summary card (Alpha Stats redesign, section 1): Level, XP-to-next-level
+ * progress bar, Current Streak. Deliberately reuses the same
+ * `computeLevelProgress`/`xpProgressPercent` math and
+ * `profiles.level`/`total_xp`/`current_streak` source Home's HomeHeader
+ * already renders (app/home/home-header.tsx) -- this card never re-derives
+ * level/XP itself, only lays the same numbers out larger, as this screen's
+ * lead card. Today's Study Time lives in the dedicated Today card instead
+ * (app/stats/today-card.tsx), not here.
  */
 export function ProgressSummaryCard({
   level,

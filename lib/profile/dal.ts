@@ -15,14 +15,18 @@
 
 import { createClient } from "@/lib/supabase/server";
 
-const PROFILE_STATS_COLUMNS = "total_xp, level, current_streak, total_enemies_defeated";
+const PROFILE_STATS_COLUMNS = "total_xp, level, current_streak, longest_streak, total_enemies_defeated, selected_deck_id";
 
 export interface ProfileStats {
   readonly totalXp: number;
   readonly level: number;
   readonly currentStreak: number;
+  /** Highest `current_streak` ever reached -- Stats' "Personal Best" section. */
+  readonly longestStreak: number;
   /** Lifetime enemy-defeat counter (docs/DATABASE_SCHEMA.md 4.1) -- Home doesn't use this field, Stats does. */
   readonly totalEnemiesDefeated: number;
+  /** The tester's currently selected deck, or `null` for an edge case `requireOnboardedTester()` doesn't actually permit in practice (onboarding requires a deck) -- kept nullable here only so a caller never has to assume the invariant itself. */
+  readonly selectedDeckId: string | null;
 }
 
 /**
@@ -39,7 +43,14 @@ export async function getProfileStats(): Promise<ProfileStats> {
   const { data, error } = await supabase
     .from("profiles")
     .select(PROFILE_STATS_COLUMNS)
-    .maybeSingle<{ total_xp: number; level: number; current_streak: number; total_enemies_defeated: number }>();
+    .maybeSingle<{
+      total_xp: number;
+      level: number;
+      current_streak: number;
+      longest_streak: number;
+      total_enemies_defeated: number;
+      selected_deck_id: string | null;
+    }>();
 
   if (error) {
     throw new Error("Failed to load profile stats", { cause: error });
@@ -53,6 +64,8 @@ export async function getProfileStats(): Promise<ProfileStats> {
     totalXp: data.total_xp,
     level: data.level,
     currentStreak: data.current_streak,
+    longestStreak: data.longest_streak,
     totalEnemiesDefeated: data.total_enemies_defeated,
+    selectedDeckId: data.selected_deck_id,
   };
 }
