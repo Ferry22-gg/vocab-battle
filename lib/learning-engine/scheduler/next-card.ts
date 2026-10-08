@@ -262,15 +262,28 @@ function createRecordingRandom(random: RandomSource): { recorded: RandomSource; 
 /**
  * Section 4: "Active admission is a scheduler decision but is NOT yet
  * persisted in Phase 6E." Reuses Phase 3's computeActiveAdmissions
- * unchanged over a `DeckActivePoolCard` projection of the snapshot's own
- * cards (never re-deriving Fresh/Active sizing itself), then returns a
- * NEW array in which every admitted card's `poolStatus` is virtually
+ * over a `DeckActivePoolCard` projection of the snapshot's own cards
+ * (never re-deriving Fresh/Active sizing itself), then returns a NEW
+ * array in which every admitted card's `poolStatus` is virtually
  * "ACTIVE" -- `cardStatus` stays "NEW" (section 4: "Admission is not
  * presentation... do NOT change NEW -> LEARNING"). Cards not admitted
  * this pass are returned by the SAME reference as in `cards` (no copying
  * of what did not change); `cards` itself is never mutated.
+ *
+ * `random` is the SAME `recorded` wrapper the caller (chooseNextCard)
+ * already threads through every other random decision in this module --
+ * NOT a second, independent RandomSource -- so the NEW-admission draw's
+ * values land in the decision's own `randomDraws` trace alongside every
+ * other draw, in consumption order, with no telemetry change required
+ * (Alpha pre-launch correction: see computeActiveAdmissions/
+ * selectNewAdmissionCandidates in lib/learning-engine/active-pool.ts for
+ * the admission policy itself; this function only wires its RandomSource
+ * through, it decides nothing).
  */
-function computeVirtualActiveRefill(cards: readonly SchedulableCardRow[]): {
+function computeVirtualActiveRefill(
+  cards: readonly SchedulableCardRow[],
+  random: RandomSource,
+): {
   projectedCards: readonly SchedulableCardRow[];
   admittedCardIds: readonly string[];
 } {
@@ -282,7 +295,7 @@ function computeVirtualActiveRefill(cards: readonly SchedulableCardRow[]): {
     .filter((card) => card.poolStatus === null && card.cardStatus === "NEW")
     .map((card) => ({ cardId: card.cardId, cardStatus: card.cardStatus, poolStatus: card.poolStatus, learningStage: card.learningStage }));
 
-  const admissions = computeActiveAdmissions({ activeCards, newReservoir });
+  const admissions = computeActiveAdmissions({ activeCards, newReservoir, random });
   const admittedSet = new Set(admissions.admittedCardIds);
 
   const projectedCards = cards.map((card) => (admittedSet.has(card.cardId) ? { ...card, poolStatus: "ACTIVE" as const } : card));
@@ -478,7 +491,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
   const now = snapshot.now;
 
   // Steps 1-3: refresh/refill. Virtual only -- see computeVirtualActiveRefill.
-  const { projectedCards, admittedCardIds } = computeVirtualActiveRefill(snapshot.cards);
+  const { projectedCards, admittedCardIds } = computeVirtualActiveRefill(snapshot.cards, recorded);
 
   // Pure, RNG-free descriptive bookkeeping, computed once and reused by
   // every return path (including an interrupt short-circuit) -- see this

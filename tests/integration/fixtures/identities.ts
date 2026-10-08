@@ -54,6 +54,9 @@ export const RC_D_V1_ROUTING_TESTER = tester("924"); // Learning Engine v1 Runti
 export const RC_D_LEGACY_ROUTING_TESTER = tester("925"); // Learning Engine v1 Runtime Cutover RC-D: never-enrolled user, legacy routing stays unchanged
 export const RC_F_CROSS_SESSION_POSITION_TESTER = tester("926"); // Runtime Cutover RC-F acceptance: deck-global scheduler_position continuity across a real finish-then-resume Session boundary, vs. Session-local session_position restarting
 export const POSITION_SEMANTICS_TESTER = tester("927"); // Stage 0 audit follow-up: real claim+commit pipeline proof of the Repair-timing/Correct-cooldown position-semantics fix
+export const NEW_ADMISSION_TESTER_A = tester("928"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester A)
+export const NEW_ADMISSION_TESTER_B = tester("929"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester B)
+export const NEW_ADMISSION_TESTER_C = tester("930"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester C)
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -83,6 +86,9 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   RC_D_LEGACY_ROUTING_TESTER,
   RC_F_CROSS_SESSION_POSITION_TESTER,
   POSITION_SEMANTICS_TESTER,
+  NEW_ADMISSION_TESTER_A,
+  NEW_ADMISSION_TESTER_B,
+  NEW_ADMISSION_TESTER_C,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;
