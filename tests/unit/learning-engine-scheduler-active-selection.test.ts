@@ -3,6 +3,7 @@ import { createEmptyCard } from "ts-fsrs";
 
 import {
   chooseActiveCard,
+  computeActiveStarvationThreshold,
   findActiveStarvationCandidates,
   selectOrdinaryActiveCandidates,
 } from "@/lib/learning-engine/scheduler/active-selection";
@@ -235,6 +236,42 @@ describe("findActiveStarvationCandidates (Phase 6C brief section 7: candidate ex
     const candidates = selectOrdinaryActiveCandidates([card], 0);
     findActiveStarvationCandidates(candidates);
     expect(card.activeDrawsSinceEligible).toBe(45);
+  });
+});
+
+describe("computeActiveStarvationThreshold (Alpha startup-sensitive correction)", () => {
+  it("at the 20-card steady-state Active Pool, the threshold is exactly 40 -- unchanged from the fixed literal", () => {
+    expect(computeActiveStarvationThreshold(20)).toBe(40);
+  });
+
+  it("above the 20-card steady state, the threshold is still capped at 40, never exceeding it", () => {
+    expect(computeActiveStarvationThreshold(25)).toBe(40);
+    expect(computeActiveStarvationThreshold(100)).toBe(40);
+  });
+
+  it("at the real Pre-Alpha tester 951 startup-phase Active Pool size (8), the threshold is 16, not 40", () => {
+    expect(computeActiveStarvationThreshold(8)).toBe(16);
+  });
+
+  it("at a 6-card Active Pool (the Fresh limit, before any promotion), the threshold is 12", () => {
+    expect(computeActiveStarvationThreshold(6)).toBe(12);
+  });
+
+  it("scales linearly (2x) below the 20-card steady state", () => {
+    expect(computeActiveStarvationThreshold(1)).toBe(2);
+    expect(computeActiveStarvationThreshold(3)).toBe(6);
+    expect(computeActiveStarvationThreshold(10)).toBe(20);
+  });
+
+  it("small-deck safety: a degenerate zero-size Active Pool yields a zero threshold without throwing -- harmless because the candidate set findActiveStarvationCandidates filters is itself always empty whenever activePoolSize is 0 (every candidate is, by construction, pool_status = 'ACTIVE')", () => {
+    expect(() => computeActiveStarvationThreshold(0)).not.toThrow();
+    expect(computeActiveStarvationThreshold(0)).toBe(0);
+  });
+
+  it("never produces a negative threshold for any non-negative pool size", () => {
+    for (const size of [0, 1, 2, 6, 8, 19, 20, 21, 50]) {
+      expect(computeActiveStarvationThreshold(size)).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

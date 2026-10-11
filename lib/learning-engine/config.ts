@@ -165,8 +165,46 @@ export const POST_GOAL_SOURCE_WEIGHTS = {
   REVIEW_PRESSURE: { active: 0.5, due: 0.48, near: 0.02 },
 } as const;
 
-/** Section 7 (active_starvation_max_active_source_draws): an eligible Active card that survives this many Active-source selections without being chosen must be guaranteed on the next Active slot (section 22.3) -- Phase 6C only exposes the raw candidate structure for this; the guarantee itself is Phase 6D. */
+/** Section 7 (active_starvation_max_active_source_draws): an eligible Active card that survives this many Active-source selections without being chosen must be guaranteed on the next Active slot (section 22.3) -- Phase 6C only exposes the raw candidate structure for this; the guarantee itself is Phase 6D. This is the CEILING used once the Active Pool has reached its steady-state size (ACTIVE_POOL_TARGET_SIZE, 20) -- see ACTIVE_STARVATION_POOL_ROTATIONS below for why a smaller, startup-sized Active Pool must use a proportionally smaller bound instead of this literal 40. */
 export const ACTIVE_STARVATION_MAX_DRAWS = 40;
+
+/**
+ * Alpha Pre-Alpha correction (startup-sensitive Active starvation): the
+ * spec's own policy table (section 7) lists active_pool_target (20) and
+ * active_starvation_max_active_source_draws (40) as two independent
+ * knobs with no documented formula relating them, but 40 was evidently
+ * calibrated against the 20-card STEADY-STATE Active Pool ("roughly two
+ * pool-wide selection opportunities" per card, 40 / 20 = 2) -- confirmed
+ * against the real Pre-Alpha tester 951 trace (tmp/stage0-smoke-951/),
+ * where an 8-card startup-phase Active Pool made the same literal 40
+ * behave as ~5 pool rotations instead, letting two already-correct
+ * LEARNING_1 cards wait 20-30 Active-source opportunities with zero
+ * revisit while this engine's own `repair_target`/`repair_hard_cap`
+ * priority (strictly above ordinary weighted selection, section 22.3)
+ * kept winning every slot against a handful of simultaneously-failing
+ * Fresh cards.
+ *
+ * This constant is the number of "pool-wide selection opportunities" the
+ * starvation guarantee is intended to represent, independent of Active
+ * Pool size -- see lib/learning-engine/scheduler/active-selection.ts's
+ * computeActiveStarvationThreshold, which derives the ACTUAL threshold
+ * for a given live Active Pool size as
+ * `min(ACTIVE_STARVATION_MAX_DRAWS, ACTIVE_STARVATION_POOL_ROTATIONS *
+ * activePoolSize)`. At activePoolSize = 20 (steady state) this yields
+ * exactly 40, unchanged from before; at activePoolSize = 8 (this engine's
+ * typical startup phase, FRESH_CARD_LIMIT = 6 plus a couple of early
+ * LEARNING_1 graduates) it yields 16 -- scaling the guarantee down with
+ * the pool instead of applying a bound calibrated for a 2.5x larger pool.
+ *
+ * This is a POLICY/UX change, not a correctness fix to any existing
+ * mechanism: repair_hard_cap (a GLOBAL interrupt, evaluated before
+ * source selection even begins), repair_target's priority above ordinary
+ * weighted selection, the Correct cooldown (5), and the Repair window
+ * (3-6) are all completely untouched by this constant or by
+ * computeActiveStarvationThreshold -- only the point at which the
+ * starvation guarantee itself fires is made pool-size-sensitive.
+ */
+export const ACTIVE_STARVATION_POOL_ROTATIONS = 2;
 
 // ---------------------------------------------------------------------------
 // Post-Mastery source policy (section 25.3) -- Phase 7

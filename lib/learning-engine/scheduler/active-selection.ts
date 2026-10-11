@@ -70,7 +70,7 @@
  * after ACTIVE has already been chosen as the draw's source.
  */
 
-import { ACTIVE_STARVATION_MAX_DRAWS } from "@/lib/learning-engine/config";
+import { ACTIVE_STARVATION_MAX_DRAWS, ACTIVE_STARVATION_POOL_ROTATIONS } from "@/lib/learning-engine/config";
 import {
   computeActiveWeight,
   isEligibleForNormalSelection,
@@ -214,4 +214,38 @@ export function findActiveStarvationCandidates(
   threshold: number = ACTIVE_STARVATION_MAX_DRAWS,
 ): readonly OrdinaryActiveCandidate[] {
   return candidates.filter((candidate) => candidate.card.activeDrawsSinceEligible >= threshold);
+}
+
+/**
+ * Startup-sensitive Active starvation threshold (see config.ts's
+ * ACTIVE_STARVATION_POOL_ROTATIONS doc comment for the full rationale).
+ * `activePoolSize` must be the TOTAL count of pool_status = 'ACTIVE'
+ * cards in the live deck snapshot (every acquisition/relearning
+ * occupant, not just the "ordinarily eligible" subset this module's own
+ * selectOrdinaryActiveCandidates narrows down to) -- the caller
+ * (lib/learning-engine/scheduler/next-card.ts's chooseNextCard) derives
+ * it from the SAME post-virtual-refill `projectedCards` every other
+ * computation in that function already uses. Deliberately NOT the
+ * "ordinarily eligible" count or any other per-turn-volatile candidate
+ * count: those shrink and grow every single turn as cards enter/leave
+ * Correct cooldown or repair/relearning governance, which would make the
+ * guarantee itself oscillate turn-to-turn -- exactly the "appear to be
+ * starving when it was simply unavailable" failure mode section 22.3
+ * already warns against for the counter itself. Total Active Pool
+ * occupancy changes only on NEW-card admission (grows) or
+ * ACQUIRED/LEARNED graduation out of Active (shrinks), so it is stable
+ * across the span of turns this guarantee needs to reason about.
+ *
+ * Caps at ACTIVE_STARVATION_MAX_DRAWS (never larger, so the 20-card
+ * steady state's existing guarantee of exactly 40 is preserved verbatim)
+ * and scales down proportionally below that. No separate floor is
+ * applied for a tiny `activePoolSize` (including 0): the candidate list
+ * this threshold is ever compared against is itself always a subset of
+ * cards with pool_status = 'ACTIVE' (selectOrdinaryActiveCandidates's
+ * own first filter), so activePoolSize = 0 can only coincide with a
+ * genuinely empty candidate set -- there is no live card for a
+ * threshold of 0 to spuriously "starve."
+ */
+export function computeActiveStarvationThreshold(activePoolSize: number): number {
+  return Math.min(ACTIVE_STARVATION_MAX_DRAWS, ACTIVE_STARVATION_POOL_ROTATIONS * activePoolSize);
 }

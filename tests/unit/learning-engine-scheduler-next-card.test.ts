@@ -397,6 +397,107 @@ describe("ACTIVE internal ordering is preserved end-to-end (section 13 of the br
   });
 });
 
+// =============================================================================
+// STARTUP-SENSITIVE ACTIVE STARVATION (Alpha correction: real Pre-Alpha
+// tester 951 trace showed the fixed-40 threshold behaving as ~5 pool
+// rotations at an 8-card startup-phase Active Pool, instead of the ~2
+// rotations that calibrated 40 against the 20-card steady state)
+// =============================================================================
+
+/** `count` repair-governed filler cards whose target/hard cap are both far in the future -- they occupy an Active slot (padding activePoolSize) without ever becoming selectable candidates themselves, so a test can control pool size independently of which card actually wins the decision. */
+function repairPaddingCards(count: number, schedulerPosition: number): SchedulableCardRow[] {
+  return Array.from({ length: count }, (_, i) =>
+    repairGovernedCard(`padding-${i}`, obligation(`padding-${i}`, schedulerPosition + 100, schedulerPosition + 150)),
+  );
+}
+
+describe("startup-sensitive Active starvation threshold, end-to-end through chooseNextCard", () => {
+  it("at an 8-card Active Pool (the real tester 951 shape: 6 Fresh + 2 LEARNING_1), the dynamic threshold is 16 -- 15 draws does not starve, 16 does", () => {
+    const repairTarget = repairGovernedCard("repair", obligation("repair", 10, 20)); // target reached at 14
+    const padding = repairPaddingCards(6, 14); // + repairTarget + starved = 8 total Active cards
+
+    const at15 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 15 });
+    const decisionAt15 = chooseNextCard(snapshot({ cards: [at15, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decisionAt15.selectionReason).toBe("repair_target");
+
+    const at16 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 16 });
+    const decisionAt16 = chooseNextCard(snapshot({ cards: [at16, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decisionAt16.selectionReason).toBe("active_starvation");
+    expect(decisionAt16.cardId).toBe("starved");
+  });
+
+  it("the OLD fixed-40 threshold would never have fired at 16-29 draws -- confirms this is a genuinely lower bound, not merely 'still eventually 40'", () => {
+    const repairTarget = repairGovernedCard("repair", obligation("repair", 10, 20));
+    const padding = repairPaddingCards(6, 14);
+    for (const draws of [16, 20, 25, 29]) {
+      const card = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: draws });
+      const decision = chooseNextCard(snapshot({ cards: [card, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+      expect(decision.selectionReason).toBe("active_starvation");
+    }
+  });
+
+  it("at the 20-card steady-state Active Pool, behavior is byte-identical to before this change: 39 draws does not starve, 40 does", () => {
+    const repairTarget = repairGovernedCard("repair", obligation("repair", 10, 20));
+    const padding = repairPaddingCards(18, 14); // + repairTarget + starved = 20 total Active cards
+
+    const at39 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 39 });
+    expect(chooseNextCard(snapshot({ cards: [at39, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5])).selectionReason).toBe(
+      "repair_target",
+    );
+
+    const at40 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 40 });
+    const decision = chooseNextCard(snapshot({ cards: [at40, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decision.selectionReason).toBe("active_starvation");
+    expect(decision.cardId).toBe("starved");
+  });
+
+  it("at a 6-card Active Pool (the bare Fresh limit, before any promotion), the dynamic threshold is 12", () => {
+    const repairTarget = repairGovernedCard("repair", obligation("repair", 10, 20));
+    const padding = repairPaddingCards(4, 14); // + repairTarget + starved = 6 total Active cards
+
+    const at11 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 11 });
+    expect(chooseNextCard(snapshot({ cards: [at11, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5])).selectionReason).toBe(
+      "repair_target",
+    );
+
+    const at12 = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 12 });
+    expect(chooseNextCard(snapshot({ cards: [at12, repairTarget, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5])).selectionReason).toBe(
+      "active_starvation",
+    );
+  });
+
+  it("small-deck safety: a single-card Active Pool never crashes and uses threshold 2, not 40", () => {
+    const lonely = activeCard({ cardId: "lonely", learningStage: "LEARNING_1", activeDrawsSinceEligible: 1 });
+    expect(() => chooseNextCard(snapshot({ cards: [lonely] }), scriptedRandom([0.5]))).not.toThrow();
+    expect(chooseNextCard(snapshot({ cards: [lonely] }), scriptedRandom([0.5])).selectionReason).toBe("active_weighted_selection");
+
+    const lonelyStarved = activeCard({ cardId: "lonely", learningStage: "LEARNING_1", activeDrawsSinceEligible: 2 });
+    const decision = chooseNextCard(snapshot({ cards: [lonelyStarved] }), scriptedRandom([0.5]));
+    expect(decision.selectionReason).toBe("active_starvation");
+  });
+
+  it("repair_hard_cap (a GLOBAL interrupt) still beats starvation at any pool size, including a small startup-phase pool where starvation's own threshold has been reached", () => {
+    const hardCapped = repairGovernedCard("hardcapped", obligation("hardcapped", 1, 14)); // hard cap reached at 14
+    const starved = activeCard({ cardId: "starved", learningStage: "LEARNING_1", activeDrawsSinceEligible: 16 });
+    const padding = repairPaddingCards(6, 14); // + hardCapped + starved = 8 total Active cards
+
+    const decision = chooseNextCard(snapshot({ cards: [hardCapped, starved, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decision.selectionReason).toBe("repair_hard_cap");
+    expect(decision.cardId).toBe("hardcapped");
+  });
+
+  it("Correct cooldown (5) and the Repair window (3-6) are completely untouched by this change -- a cooldown-blocked or not-yet-target-reached card never starves regardless of pool size", () => {
+    const cooldownBlocked = activeCard({ cardId: "blocked", learningStage: "LEARNING_1", activeDrawsSinceEligible: 100, correctCooldownUntilPosition: 50 });
+    const padding = repairPaddingCards(7, 14); // 8 total Active cards -- dynamic threshold would be 16, irrelevant here
+    const decision = chooseNextCard(snapshot({ cards: [cooldownBlocked, ...padding], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decision.selectionReason).not.toBe("active_starvation");
+
+    const notYetTargetReached = repairGovernedCard("not-yet", obligation("not-yet", 11, 20)); // target at 15, one position shy
+    const decision2 = chooseNextCard(snapshot({ cards: [notYetTargetReached, ...repairPaddingCards(7, 14)], schedulerPosition: 14 }), scriptedRandom([0.5]));
+    expect(decision2.selectionReason).not.toBe("repair_target");
+  });
+});
+
 describe("DUE/NEAR_DUE paths delegate to Phase 6C selectors unchanged", () => {
   it("21. the DUE path uses chooseDueCard's own weighting (lower R wins more often; verified via exact weight share)", () => {
     const low = outsideCard({ cardId: "low-r" }, { stability: 2 });

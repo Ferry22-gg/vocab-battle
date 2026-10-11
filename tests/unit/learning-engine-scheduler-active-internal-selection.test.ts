@@ -117,6 +117,40 @@ describe("selectActiveStarvationCandidate (section 22.3)", () => {
     expect(selectActiveStarvationCandidate([repairGoverned], 0, scriptedRandom([0.5]))).toBeNull();
   });
 
+  describe("explicit threshold parameter (Alpha startup-sensitive correction)", () => {
+    it("omitting the threshold preserves the exact pre-existing fixed-40 behavior", () => {
+      const below = activeCard({ activeDrawsSinceEligible: 39 });
+      const at = activeCard({ activeDrawsSinceEligible: 40 });
+      expect(selectActiveStarvationCandidate([below], 0, scriptedRandom([0.5]))).toBeNull();
+      expect(selectActiveStarvationCandidate([at], 0, scriptedRandom([0.5]))?.card.cardId).toBe("card-1");
+    });
+
+    it("a smaller explicit threshold (startup-sized Active Pool) fires starvation well before 40 draws", () => {
+      const card = activeCard({ activeDrawsSinceEligible: 16 });
+      expect(selectActiveStarvationCandidate([card], 0, scriptedRandom([0.5]), 40)).toBeNull();
+      expect(selectActiveStarvationCandidate([card], 0, scriptedRandom([0.5]), 16)?.card.cardId).toBe("card-1");
+    });
+
+    it("the same threading works through selectActiveInternalCard, and starvation still beats a simultaneously target-reached repair once the smaller threshold is met", () => {
+      const starved = activeCard({ cardId: "starved", activeDrawsSinceEligible: 16 });
+      const repairTarget = repairGovernedCard("repair", obligation("repair", 10, 17)); // target reached at 14
+
+      // Below the dynamic threshold: repair_target wins (ordinary priority order).
+      expect(selectActiveInternalCard([starved, repairTarget], 14, scriptedRandom([0.5]), 20)).toMatchObject({ reason: "repair_target" });
+      // At/above the dynamic threshold: starvation preempts repair_target, exactly as it already does at the fixed 40.
+      expect(selectActiveInternalCard([starved, repairTarget], 14, scriptedRandom([0.5]), 16)).toMatchObject({
+        cardId: "starved",
+        reason: "active_starvation",
+      });
+    });
+
+    it("omitting the threshold on selectActiveInternalCard also preserves the fixed-40 default end-to-end", () => {
+      const card = activeCard({ cardId: "a", activeDrawsSinceEligible: 16 });
+      // 16 draws is not enough under the implicit default (40).
+      expect(selectActiveInternalCard([card], 0, scriptedRandom([0.5]))).toMatchObject({ reason: "active_weighted_selection" });
+    });
+  });
+
   it("18. starvation never produces a GLOBAL interrupt and cannot force the top-level source to ACTIVE -- findGlobalInterrupt is entirely blind to it", () => {
     const starved = activeCard({ cardId: "starved", activeDrawsSinceEligible: 1000 });
     const result = findGlobalInterrupt({

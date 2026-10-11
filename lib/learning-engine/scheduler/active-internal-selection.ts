@@ -44,6 +44,7 @@
  * boundary.
  */
 
+import { ACTIVE_STARVATION_MAX_DRAWS } from "@/lib/learning-engine/config";
 import {
   chooseActiveCard,
   findActiveStarvationCandidates,
@@ -120,14 +121,27 @@ export type ActiveInternalSelection =
  * injected RNG only on an exact tie (Phase 6D brief section 8's approved
  * tie-break -- no timestamps, no other aging rule). Returns `null` for a
  * genuinely empty starvation set, never throws.
+ *
+ * `threshold` (Alpha startup-sensitive correction): defaults to the
+ * literal ACTIVE_STARVATION_MAX_DRAWS (40) so every existing caller that
+ * omits it keeps the exact pre-existing fixed-40 behavior unchanged. The
+ * live pipeline (lib/learning-engine/scheduler/next-card.ts's
+ * chooseNextCard) instead passes an explicit, pool-size-derived value
+ * from active-selection.ts's computeActiveStarvationThreshold -- see
+ * that function's own doc comment for why the threshold itself, not an
+ * implicit pool-size parameter here, is what gets threaded through this
+ * call chain (this function has no reliable way to distinguish "a
+ * deliberately tiny live Active Pool" from "a unit test's minimal
+ * fixture array" from `cards` alone).
  */
 export function selectActiveStarvationCandidate(
   cards: readonly SchedulableCardRow[],
   schedulerPosition: number,
   random: RandomSource,
+  threshold: number = ACTIVE_STARVATION_MAX_DRAWS,
 ): OrdinaryActiveCandidate | null {
   const ordinary = selectOrdinaryActiveCandidates(cards, schedulerPosition);
-  const starved = findActiveStarvationCandidates(ordinary);
+  const starved = findActiveStarvationCandidates(ordinary, threshold);
   if (starved.length === 0) {
     return null;
   }
@@ -206,13 +220,19 @@ export function selectTargetReachedRepairCandidate(
  * from; a step that returns no candidates consumes no random() call,
  * keeping the whole sequence exactly as deterministic as its underlying
  * primitives already are (section 14 of the Phase 6D brief).
+ *
+ * `starvationThreshold` (Alpha startup-sensitive correction): forwarded
+ * verbatim to selectActiveStarvationCandidate -- see that function's own
+ * doc comment. Defaults to the fixed ACTIVE_STARVATION_MAX_DRAWS so every
+ * existing caller/test that omits it is completely unaffected.
  */
 export function selectActiveInternalCard(
   cards: readonly SchedulableCardRow[],
   schedulerPosition: number,
   random: RandomSource,
+  starvationThreshold: number = ACTIVE_STARVATION_MAX_DRAWS,
 ): ActiveInternalSelection {
-  const starvation = selectActiveStarvationCandidate(cards, schedulerPosition, random);
+  const starvation = selectActiveStarvationCandidate(cards, schedulerPosition, random, starvationThreshold);
   if (starvation !== null) {
     return {
       cardId: starvation.card.cardId,

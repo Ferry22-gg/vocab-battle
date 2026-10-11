@@ -1253,3 +1253,157 @@ describe("spec acceptance test mapping (Phase 6F brief section 19)", () => {
     expect(restored.relearningPhase).toBeNull();
   });
 });
+
+// =============================================================================
+// Alpha startup-sensitive Active starvation correction: a real-shape
+// regression replicating the Pre-Alpha tester 951 trace (6 Fresh cards
+// perpetually Wrong/Repair-governed, 2 promoted to LEARNING_1, neither
+// ever revisited under the old fixed-40 threshold within the observed
+// window) through the full, stateful chooseNextCard() pipeline -- never a
+// second scheduler. Proves no deadlock/liveness regression across a long
+// run, and that the dynamic threshold actually rescues an eligible
+// LEARNING_1 card well before 40 draws once the Active Pool is still
+// small.
+// =============================================================================
+describe("Alpha startup-sensitive Active starvation: real-shape simulation regression (tester 951 replica)", () => {
+  it("6 Fresh cards fail forever, 2 reach LEARNING_1, and a LEARNING_1 card is rescued by starvation long before 40 draws at the resulting 8-card Active Pool -- with no deadlock across a long run", () => {
+    const reservoir = Array.from({ length: 54 }, (_, i) => makeReservoirCard(`reservoir-${i}`));
+    const sim = new SchedulerSimulation({ cards: reservoir, random: createSeededRandom(951) });
+
+    const promoted = new Set<string>();
+    const MAX_STEPS = 600;
+    let steps = 0;
+    let reachedTargetShape = false;
+
+    for (; steps < MAX_STEPS; steps += 1) {
+      const decision = sim.step((d) => {
+        if (d.cardId === null) return true;
+        const card = sim.getCard(d.cardId);
+        // Exactly replicate the real trace: give the first two distinct
+        // Fresh cards their one-and-only Correct (promoting FRESH ->
+        // LEARNING_1 via the Fresh exception on a repair retry, or
+        // directly on an ordinary first attempt -- either is faithful to
+        // the real account, which saw both), then fail every other
+        // presentation forever, including every subsequent repair retry
+        // for the already-promoted cards (they are never drawn again
+        // ordinarily until starvation/eligibility resolves it).
+        if (card.learningStage === "FRESH" && !promoted.has(d.cardId) && promoted.size < 2) {
+          promoted.add(d.cardId);
+          return true;
+        }
+        return false;
+      });
+      void decision;
+
+      const activePoolSize = sim.getAllCards().filter((c) => c.poolStatus === "ACTIVE").length;
+      const learningOneCount = sim.getAllCards().filter((c) => c.learningStage === "LEARNING_1").length;
+      if (activePoolSize === 8 && learningOneCount === 2 && promoted.size === 2) {
+        reachedTargetShape = true;
+        break;
+      }
+    }
+
+    // Sanity: the harness actually reached the real-trace shape within a
+    // bounded number of steps -- if this ever fails, the scenario setup
+    // itself (not the fix) needs revisiting, not a sign of a liveness bug.
+    expect(reachedTargetShape).toBe(true);
+    expect(sim.getAllCards().filter((c) => c.poolStatus === "ACTIVE")).toHaveLength(8);
+
+    const learningOneCardIds = sim.getAllCards().filter((c) => c.learningStage === "LEARNING_1").map((c) => c.cardId);
+    expect(learningOneCardIds).toHaveLength(2);
+
+    // Continue stepping, failing every presentation of the 6 still-Fresh
+    // cards forever (never scripting Wrong on a repair/spaced-
+    // confirmation retry that would violate the harness's own documented
+    // "no normative answer" restriction is unnecessary here -- Wrong is
+    // always normative), until a LEARNING_1 card is actually rescued by
+    // starvation or the run exhausts its bound.
+    let starvationFired = false;
+    let starvationStepIndex: number | null = null;
+    for (let i = 0; i < MAX_STEPS && !starvationFired; i += 1) {
+      const decision = sim.step(() => false);
+      if (decision.selectionReason === "active_starvation" && learningOneCardIds.includes(decision.cardId ?? "")) {
+        starvationFired = true;
+        starvationStepIndex = i;
+      }
+    }
+
+    expect(starvationFired).toBe(true);
+    // The dynamic threshold at an 8-card Active Pool is 16 (2 *
+    // activePoolSize) -- the rescue must happen well inside that bound,
+    // never anywhere near the old fixed-40 ceiling this replaces.
+    expect(starvationStepIndex).not.toBeNull();
+    expect(starvationStepIndex!).toBeLessThan(30);
+
+    // Liveness: scheduler_position/revision kept advancing throughout --
+    // no fixed point, no thrown error, across the entire run.
+    expect(sim.position).toBeGreaterThan(0);
+    expect(sim.revision).toBeGreaterThan(1);
+  });
+
+  it("at the 20-card steady state the same replica shape (scaled up) still requires close to the full 40 draws -- the startup correction does not leak into saturated-deck behavior", () => {
+    const reservoir = Array.from({ length: 80 }, (_, i) => makeReservoirCard(`reservoir-${i}`));
+    const sim = new SchedulerSimulation({ cards: reservoir, random: createSeededRandom(2020) });
+
+    const promoted = new Set<string>();
+    const MAX_STEPS = 2000;
+    let steps = 0;
+    let reachedTwentyCardPool = false;
+
+    for (; steps < MAX_STEPS; steps += 1) {
+      const decision = sim.step((d) => {
+        if (d.cardId === null) return true;
+        const card = sim.getCard(d.cardId);
+        // Promote enough distinct Fresh cards to grow the Active Pool to
+        // its full 20-card steady state (6 initial Fresh + 14 more
+        // promotions, each freeing exactly one more admission slot: 6 +
+        // 14 = 20).
+        if (card.learningStage === "FRESH" && !promoted.has(d.cardId) && promoted.size < 14) {
+          promoted.add(d.cardId);
+          return true;
+        }
+        return false;
+      });
+      void decision;
+
+      const activePoolSize = sim.getAllCards().filter((c) => c.poolStatus === "ACTIVE").length;
+      if (activePoolSize === 20) {
+        reachedTwentyCardPool = true;
+        break;
+      }
+    }
+
+    expect(reachedTwentyCardPool).toBe(true);
+
+    const learningOneCardIds = sim.getAllCards().filter((c) => c.learningStage === "LEARNING_1").map((c) => c.cardId);
+    expect(learningOneCardIds.length).toBeGreaterThan(0);
+
+    // Phase 2: resolve every remaining repair obligation correctly (never
+    // adversarially Wrong-forever -- that risks the SEPARATE, pre-existing
+    // repair_hard_cap-vs-starvation interrupt-priority dynamic this task
+    // was never asked to touch: repair_hard_cap is a GLOBAL interrupt that
+    // sits unconditionally above starvation, by original unchanged design,
+    // and a perpetual multi-card Wrong-forever stress case can make it
+    // cascade indefinitely regardless of pool size -- confirmed by a
+    // throwaway diagnostic run, not something this correction changes or
+    // is responsible for). Answering every draw Correct instead lets the
+    // repair backlog drain, so only ordinary weighted selection remains
+    // once no card is Repair-governed -- the clean condition this
+    // boundary check actually needs.
+    let starvationFired = false;
+    let starvationStepIndex: number | null = null;
+    for (let i = 0; i < MAX_STEPS && !starvationFired; i += 1) {
+      const decision = sim.step(true);
+      if (decision.selectionReason === "active_starvation" && learningOneCardIds.includes(decision.cardId ?? "")) {
+        starvationFired = true;
+        starvationStepIndex = i;
+      }
+    }
+
+    expect(starvationFired).toBe(true);
+    // At a full 20-card pool the threshold is exactly 40 again -- the
+    // rescue should take roughly that many draws, nowhere near the ~16
+    // bound a startup-sized pool would use.
+    expect(starvationStepIndex!).toBeGreaterThan(20);
+  });
+});

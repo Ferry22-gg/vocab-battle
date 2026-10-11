@@ -107,7 +107,7 @@ import {
 } from "@/lib/learning-engine/repair-scheduler";
 import { computeDueWeight } from "@/lib/learning-engine/fsrs/priority";
 import { selectActiveInternalCard } from "@/lib/learning-engine/scheduler/active-internal-selection";
-import { selectOrdinaryActiveCandidates } from "@/lib/learning-engine/scheduler/active-selection";
+import { computeActiveStarvationThreshold, selectOrdinaryActiveCandidates } from "@/lib/learning-engine/scheduler/active-selection";
 import { chooseDueCard, selectDueCandidates } from "@/lib/learning-engine/scheduler/due-selection";
 import { findGlobalInterrupt } from "@/lib/learning-engine/scheduler/interrupts";
 import { chooseNearDueCard, selectNearDueCandidates } from "@/lib/learning-engine/scheduler/near-due-selection";
@@ -503,6 +503,15 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
   const activeCandidateCount = computeActiveCandidateCount(projectedCards, schedulerPosition);
   const randomMasteredEligibleCount = selectStrongMasteredCandidateIds(projectedCards, now).length;
 
+  // Startup-sensitive Active starvation threshold (config.ts's
+  // ACTIVE_STARVATION_POOL_ROTATIONS doc comment has the full rationale):
+  // derived from the TOTAL pool_status = 'ACTIVE' occupancy of this same
+  // post-virtual-refill projectedCards snapshot -- a stable count that
+  // only changes via NEW-card admission or ACQUIRED/LEARNED graduation,
+  // never via the per-turn churn of cooldown/repair governance.
+  const activePoolSize = projectedCards.filter((card) => card.poolStatus === "ACTIVE").length;
+  const activeStarvationThreshold = computeActiveStarvationThreshold(activePoolSize);
+
   // Phase 7 section 4: ORDINARY vs POST_MASTERY, decided once per decision
   // and trusted for the rest of this call -- see post-mastery-mode.ts for
   // why this never re-derives hasAchievedFullMastery itself.
@@ -634,6 +643,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
       nearDueCandidateCount,
       firstPassQueueBefore,
       postMasteryShuffleBagBefore,
+      activeStarvationThreshold,
       recorded,
       finalize,
     });
@@ -650,6 +660,7 @@ export function chooseNextCard(snapshot: DeckSchedulerSnapshot, random: RandomSo
     nearDueCandidateCount,
     firstPassQueueBefore,
     postMasteryShuffleBagBefore,
+    activeStarvationThreshold,
     recorded,
     finalize,
   });
@@ -684,6 +695,8 @@ interface OrdinaryModeInput {
   readonly nearDueCandidateCount: number;
   readonly firstPassQueueBefore: readonly string[] | null;
   readonly postMasteryShuffleBagBefore: readonly string[] | null;
+  /** Startup-sensitive Active starvation threshold for this decision -- see chooseNextCard's own computation and active-selection.ts's computeActiveStarvationThreshold. */
+  readonly activeStarvationThreshold: number;
   readonly recorded: RandomSource;
   readonly finalize: FinalizeFn;
 }
@@ -804,7 +817,7 @@ function chooseOrdinaryModeCard(input: OrdinaryModeInput): NextCardDecision {
   );
 
   if (chosenSource === "ACTIVE") {
-    const selection = selectActiveInternalCard(projectedCards, schedulerPosition, recorded);
+    const selection = selectActiveInternalCard(projectedCards, schedulerPosition, recorded, input.activeStarvationThreshold);
     invariant(selection !== null, "ACTIVE was chosen as the source but selectActiveInternalCard returned null despite a positive candidate count");
 
     return finalize({
@@ -868,6 +881,8 @@ interface PostMasteryModeInput {
   readonly nearDueCandidateCount: number;
   readonly firstPassQueueBefore: readonly string[] | null;
   readonly postMasteryShuffleBagBefore: readonly string[] | null;
+  /** Startup-sensitive Active starvation threshold -- forwarded to selectActiveInternalCard below for consistency (structurally unreachable in Post-Mastery mode, see this function's own doc comment, but kept as a single source of truth rather than silently diverging). */
+  readonly activeStarvationThreshold: number;
   readonly recorded: RandomSource;
   readonly finalize: FinalizeFn;
 }
@@ -914,7 +929,7 @@ function choosePostMasteryModeCard(input: PostMasteryModeInput): NextCardDecisio
   const { projectedCards, schedulerPosition, now, desiredRetention, sourceWeightsNormalized, recorded, finalize } = input;
   const firstPassQueueAfter = input.firstPassQueueBefore; // first-pass batches cannot exist in Post-Mastery mode; passed through unchanged regardless
 
-  const relearningService = selectActiveInternalCard(projectedCards, schedulerPosition, recorded);
+  const relearningService = selectActiveInternalCard(projectedCards, schedulerPosition, recorded, input.activeStarvationThreshold);
   if (relearningService !== null) {
     invariant(
       relearningService.reason === "repair_target" || relearningService.reason === "spaced_confirmation",

@@ -57,6 +57,7 @@ export const POSITION_SEMANTICS_TESTER = tester("927"); // Stage 0 audit follow-
 export const NEW_ADMISSION_TESTER_A = tester("928"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester A)
 export const NEW_ADMISSION_TESTER_B = tester("929"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester B)
 export const NEW_ADMISSION_TESTER_C = tester("930"); // Alpha pre-launch correction: randomized NEW-card admission, real claim pipeline proof (tester C)
+export const STARTUP_STARVATION_TESTER = tester("931"); // Alpha startup-sensitive Active starvation correction: real claim+commit pipeline proof that the dynamic threshold fires earlier than the fixed 40 at a small startup-phase Active Pool
 
 export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   CORE_ANSWER_TESTER,
@@ -89,6 +90,7 @@ export const ALL_INTEGRATION_TESTERS: readonly TesterIdentity[] = [
   NEW_ADMISSION_TESTER_A,
   NEW_ADMISSION_TESTER_B,
   NEW_ADMISSION_TESTER_C,
+  STARTUP_STARVATION_TESTER,
 ];
 
 const BETA_OR_E2E_RANGE_PATTERN = /^(0[0-3][0-9]|999|8\d\d)$/;
