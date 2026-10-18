@@ -337,7 +337,17 @@ export function SessionScreen({
               back={cardState.card.back}
               frontLabel={frontLanguageLabel}
               backLabel={backLanguageLabel}
-              revealed={guardState.phase !== "idle"}
+              // Alpha card-loop perceived-latency experiment: `revealed`
+              // now flips to false the INSTANT grading starts
+              // ("revealing"/"ready" -> "grading"), not only once the
+              // server has replied -- this is what makes FlashCard begin
+              // its outgoing (flip-to-edge) transition immediately,
+              // overlapping with the submitAnswerAndAdvanceAction()
+              // round trip below instead of waiting for it. See
+              // lib/session-ui/flash-card-display.ts's header for how the
+              // card safely holds at the hidden edge until the
+              // authoritative next card actually arrives.
+              revealed={guardState.phase === "revealing" || guardState.phase === "ready"}
               reducedMotion={reducedMotion}
               onFlipDone={handleFlipDone}
             />

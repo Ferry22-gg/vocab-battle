@@ -48,6 +48,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type TransitionEvent } from "react";
 import {
   applyEdgeReached,
+  applyNextCardReady,
   applyRevealedChange,
   initialFlashCardDisplayState,
   type FlashCardContent,
@@ -121,11 +122,18 @@ export function FlashCard({
   // ---------------------------------------------------------------------
   // `displayed` is this component's OWN copy of what is actually
   // rendered -- deliberately never `front`/`back`/`frontLabel`/
-  // `backLabel` directly. Those props change the moment
-  // session-screen.tsx's applyNextCard() runs: `setCardState(nextCard)`
-  // immediately followed, in the SAME synchronous call (same React
-  // commit), by `dispatchGuard({type:"RESET"})`, which is what flips
-  // `revealed` from true back to false.
+  // `backLabel` directly.
+  //
+  // Alpha card-loop perceived-latency experiment: `revealed` now flips
+  // true -> false the INSTANT grading is submitted (session-screen.tsx's
+  // guardState phase leaving "ready"), well before the server has
+  // replied -- not, as originally, in the same commit as
+  // `setCardState(nextCard)`. `front`/`back`/etc. only change LATER, once
+  // the server's response actually arrives. This is exactly why the
+  // content freeze below can no longer be driven by the `revealed`
+  // transition alone -- see lib/session-ui/flash-card-display.ts's own
+  // header ("Perceived-latency extension") for the two-signal race this
+  // now resolves (EDGE_REACHED vs. NEXT_CARD_READY, whichever is last).
   //
   // A first fix simply froze `displayed` on the OLD card for the whole
   // flip-back duration, then swapped once fully settled at 0deg/front-
@@ -158,9 +166,10 @@ export function FlashCard({
   //
   // The decision logic itself is the pure, directly-unit-tested state
   // machine in lib/session-ui/flash-card-display.ts -- this component
-  // only wires it to React: the `revealed`-changed branch below runs
-  // DURING RENDER (React's own documented "adjusting state when a prop
-  // changes" escape hatch --
+  // only wires it to React: both the `revealed`-changed branch AND the
+  // new content-changed-while-awaiting branch below run DURING RENDER
+  // (React's own documented "adjusting state when a prop changes"
+  // escape hatch --
   // https://react.dev/reference/react/useState#storing-information-from-previous-renders
   // -- a conditional setState call compared against a previous-render
   // snapshot, not inside an Effect). Only the actual timed fallback (an
@@ -169,21 +178,37 @@ export function FlashCard({
   const content: FlashCardContent = { cardId, front, back, frontLabel, backLabel };
   const [displayState, setDisplayState] = useState(() => initialFlashCardDisplayState(content, revealed));
 
+  // Two independent signals, not one -- see lib/session-ui/flash-card-display.ts's
+  // own header ("Perceived-latency extension") for the full race
+  // analysis. `revealed` flipping false now starts the exit transition
+  // immediately, BEFORE the next card's content is known; `content`
+  // itself changing afterward (while still awaiting one) is what
+  // supplies it, independently of whether the edge has been reached yet.
   if (revealed !== displayState.prevRevealed) {
     setDisplayState(applyRevealedChange(displayState, content, revealed));
+  } else if (displayState.awaitingNextCard && content.cardId !== displayState.prevContentCardId) {
+    setDisplayState(applyNextCardReady(displayState, content));
   }
 
-  const { position, pendingSwap } = displayState;
+  const { position, pendingSwap, awaitingNextCard, edgeReached } = displayState;
 
   // Fallback-only; the primary signal is the transitionend handlers wired
   // into the rotating layer / back face below. `applyEdgeReached` itself
-  // is a no-op once the swap has already happened via the other path, so
-  // whichever of the two fires first is the one that actually matters.
+  // is idempotent once arrival has already been confirmed via the other
+  // path, so whichever of the two fires first is the one that actually
+  // matters. Scheduled whenever arrival at the edge hasn't been
+  // confirmed yet -- NOT only when `pendingSwap` is already set: the
+  // perceived-latency extension's "hold at the safe hidden state" case
+  // (awaitingNextCard, pendingSwap still null because the server hasn't
+  // replied) must ALSO get a fallback, or a real transitionend that
+  // somehow never fires would leave `edgeReached` permanently false even
+  // after the content eventually arrives.
   useEffect(() => {
-    if (position !== "edge" || pendingSwap === null) return;
+    if (position !== "edge" || edgeReached) return;
+    if (pendingSwap === null && !awaitingNextCard) return;
     const timer = setTimeout(() => setDisplayState(applyEdgeReached), edgeFallbackMs(reducedMotion));
     return () => clearTimeout(timer);
-  }, [position, pendingSwap, reducedMotion]);
+  }, [position, pendingSwap, awaitingNextCard, edgeReached, reducedMotion]);
 
   const displayed = displayState.displayed;
 
