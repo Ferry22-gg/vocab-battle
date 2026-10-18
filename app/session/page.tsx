@@ -28,14 +28,19 @@ export default async function SessionPage() {
   const tester = await requireOnboardedTester();
 
   const session = await startOrResumeSession();
-  const initialCard = await getNextSessionCardForEngine(tester.id, session.id);
 
-  // Presentation-only (flashcard eyebrow labels, e.g. "Swahili" / "English")
-  // -- never Learning Engine state. Falls back to generic labels rather
+  // The initial card and the deck row both depend only on `session`
+  // (already resolved above), never on each other -- fetched concurrently
+  // rather than as two sequential round trips. Presentation-only: `deck`
+  // feeds only the flashcard eyebrow labels (e.g. "Swahili" / "English"),
+  // never Learning Engine state, and falls back to generic labels rather
   // than throwing if the deck row is ever unreachable (should not happen
   // for an active session's own deck, but this screen must never fail to
   // render over a label).
-  const deck = await getDeckById(session.deck_id);
+  const [initialCard, deck] = await Promise.all([
+    getNextSessionCardForEngine(tester.id, session.id),
+    getDeckById(session.deck_id),
+  ]);
   const frontLanguageLabel = deck ? getLanguageDisplayName(deck.front_language) : "Front";
   const backLanguageLabel = deck ? getLanguageDisplayName(deck.back_language) : "Back";
 

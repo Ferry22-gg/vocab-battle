@@ -290,6 +290,70 @@ function shapeLearningEngineAnswerSuccess(result: CommitLearningEngineAnswerResu
 }
 
 // =============================================================================
+// Combined answer + next-card orchestration (Alpha performance optimization
+// #2) -- collapses the Session UI's two separate browser round trips
+// (submitAnswer, then a separate getNextSessionCardAction) into one. This
+// is OUTER orchestration only: it calls the exact same `submitAnswerForEngine`
+// and `getNextSessionCardForEngine` above, unchanged, in the same order the
+// browser previously enforced via two round trips (commit, THEN next-card --
+// the next card must be selected from post-answer state, so this sequencing
+// is a correctness requirement, not merely an artifact of two round trips).
+// Neither underlying trusted RPC/transaction is touched, merged, or made to
+// do more than it already did.
+// =============================================================================
+
+export interface SubmitAnswerAndAdvanceResult {
+  readonly answerResult: SubmitAnswerResult;
+  /**
+   * `null` when either (a) the answer commit itself failed (`answerResult.ok
+   * === false`) -- next-card is never attempted in that case -- or (b) the
+   * commit succeeded but the next-card fetch itself threw an unexpected
+   * error. `nextCardFailed` disambiguates the two: only case (b) sets it
+   * `true`. A legitimate modeled outcome (no card currently selectable,
+   * session not found, etc.) is NOT a failure -- it comes back as an
+   * ordinary `NextSessionCard` value here (`status: "no_card"` / etc.),
+   * exactly as `getNextSessionCardForEngine` already returns it to its
+   * other caller (app/actions/sessions.ts).
+   */
+  readonly nextCard: NextSessionCard | null;
+  /**
+   * True only when the answer commit succeeded but fetching the next card
+   * threw. The caller must preserve the already-committed `answerResult`
+   * and retry ONLY the next-card fetch (the existing getNextSessionCardAction
+   * round trip remains available for exactly this) -- never resubmit the
+   * answer merely because this is true.
+   */
+  readonly nextCardFailed: boolean;
+}
+
+/**
+ * Submits one answer, then -- only if that commit succeeded -- fetches the
+ * next card, in a single server-side call. The next-card fetch is wrapped
+ * so it can never cause this function to throw: a thrown error from
+ * `getNextSessionCardForEngine` (as opposed to one of its normal modeled
+ * outcomes) is caught and reported via `nextCardFailed`, so a browser-side
+ * failure to retrieve the next card never loses visibility of the answer
+ * that already committed successfully.
+ */
+export async function submitAnswerAndAdvance(
+  input: SubmitAnswerInput,
+  userId: string,
+): Promise<SubmitAnswerAndAdvanceResult> {
+  const answerResult = await submitAnswerForEngine(input, userId);
+
+  if (!answerResult.ok) {
+    return { answerResult, nextCard: null, nextCardFailed: false };
+  }
+
+  try {
+    const nextCard = await getNextSessionCardForEngine(userId, input.sessionId);
+    return { answerResult, nextCard, nextCardFailed: false };
+  } catch {
+    return { answerResult, nextCard: null, nextCardFailed: true };
+  }
+}
+
+// =============================================================================
 // Session finish (RC-D section 16/17) -- re-exported here only so callers
 // never need to decide between an engine-aware vs. engine-unaware finish
 // path; finish_session() itself already branches on engine_version

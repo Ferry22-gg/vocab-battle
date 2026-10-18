@@ -23,11 +23,12 @@
  * Server Action boundary.
  */
 
-import { requireActiveTester } from "@/lib/auth/dal";
-import { submitAnswerForEngine } from "@/lib/learning/engine-router";
+import { requireActiveTester, requireOnboardedTester } from "@/lib/auth/dal";
+import { submitAnswerForEngine, submitAnswerAndAdvance } from "@/lib/learning/engine-router";
 import type { SubmitAnswerInput, SubmitAnswerResult } from "@/lib/learning/submit-answer";
+import type { SubmitAnswerAndAdvanceResult } from "@/lib/learning/engine-router";
 
-export type { SubmitAnswerInput, SubmitAnswerResult };
+export type { SubmitAnswerInput, SubmitAnswerResult, SubmitAnswerAndAdvanceResult };
 
 /**
  * Resolves `userId` exclusively from requireActiveTester() -- never from
@@ -40,8 +41,35 @@ export type { SubmitAnswerInput, SubmitAnswerResult };
  * never trusts, an engine_version -- only `input`'s documented browser
  * fields (clientEventId, sessionId, cardId, correct, responseTimeMs,
  * claimId) ever cross this boundary.
+ *
+ * Retained, unused by the normal Session UI grading path (see
+ * `submitAnswerAndAdvance` below) -- kept as-is in case another caller
+ * still needs the answer-only action.
  */
 export async function submitAnswer(input: SubmitAnswerInput): Promise<SubmitAnswerResult> {
   const tester = await requireActiveTester();
   return submitAnswerForEngine(input, tester.id);
+}
+
+/**
+ * Alpha performance optimization #2: the Session UI's normal grading
+ * Server Action. Submits the answer and, only on a successful commit,
+ * fetches the next card in the SAME server-side call -- collapsing what
+ * was previously two separate browser round trips (submitAnswer, then a
+ * separate getNextSessionCardAction call) into one. Uses
+ * requireOnboardedTester() (strictly stronger than requireActiveTester(),
+ * and the same gate getNextSessionCardAction below already uses) since
+ * this action now also performs the next-card fetch that gate protects.
+ *
+ * Delegates entirely to lib/learning/engine-router.ts's
+ * `submitAnswerAndAdvance`, which composes the exact same
+ * `submitAnswerForEngine`/`getNextSessionCardForEngine` calls this file and
+ * app/actions/sessions.ts already used separately -- no new trusted
+ * read/write primitive, no change to either underlying RPC/transaction.
+ */
+export async function submitAnswerAndAdvanceAction(
+  input: SubmitAnswerInput,
+): Promise<SubmitAnswerAndAdvanceResult> {
+  const tester = await requireOnboardedTester();
+  return submitAnswerAndAdvance(input, tester.id);
 }

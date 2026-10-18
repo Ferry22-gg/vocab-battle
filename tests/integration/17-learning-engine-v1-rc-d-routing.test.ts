@@ -7,7 +7,9 @@ import { setRlsClient, clearRlsClient } from "./rls-client-context";
 import { createAdminClient } from "./admin-client";
 import { getSessionByIdAdmin, countAnswerEventsByClientEventId } from "./db-assertions";
 
-const { getNextSessionCardForEngine, submitAnswerForEngine } = await import("@/lib/learning/engine-router");
+const { getNextSessionCardForEngine, submitAnswerForEngine, submitAnswerAndAdvance } = await import(
+  "@/lib/learning/engine-router"
+);
 const { finishSession } = await import("@/lib/sessions/dal");
 const { enrollUserInLearningEngineV1 } = await import("@/lib/learning-engine/cutover/enroll");
 
@@ -261,5 +263,89 @@ describe("Learning Engine v1 Runtime Cutover RC-D: live Session routing (real lo
       .in("session_id", sessionIds);
     expect(reviewCount).toBe(0);
     expect(learningQueueCount).toBe(0);
+  });
+
+  it("scenario 8: submitAnswerAndAdvance -- a lost-response retry (same clientEventId) does not create a second next-card claim or double-advance the scheduler", async () => {
+    setRlsClient(v1Tester.client);
+
+    const session = await startOrResumeSessionFor(v1Tester);
+    const card = await getNextSessionCardForEngine(v1Tester.userId, session.id);
+    expect(card.status).toBe("ok");
+    if (card.status !== "ok") return;
+
+    const admin = createAdminClient();
+    const deckRow = (await admin.from("decks").select("id").eq("owner_user_id", v1Tester.userId).limit(1).maybeSingle()).data as {
+      id: string;
+    } | null;
+
+    const clientEventId = crypto.randomUUID();
+    const input = {
+      clientEventId,
+      sessionId: session.id,
+      cardId: card.cardId,
+      correct: true,
+      responseTimeMs: 900,
+      claimId: card.claimId,
+    };
+
+    // Call #1: the original request -- commit succeeds, next-card claim
+    // succeeds -- but its response is what gets lost before reaching the
+    // browser (never actually observed by the caller in this scenario).
+    const first = await submitAnswerAndAdvance(input, v1Tester.userId);
+    expect(first.answerResult.ok).toBe(true);
+    if (!first.answerResult.ok) return;
+    expect(first.answerResult.data.isReplay).toBe(false);
+    expect(first.nextCardFailed).toBe(false);
+    expect(first.nextCard?.status).toBe("ok");
+    const firstNextClaimId = first.nextCard && first.nextCard.status === "ok" ? first.nextCard.claimId : null;
+    expect(firstNextClaimId).not.toBeNull();
+
+    const deckStateAfterFirst = (
+      await admin
+        .from("user_deck_learning_state")
+        .select("scheduler_position, scheduler_revision")
+        .eq("user_id", v1Tester.userId)
+        .eq("deck_id", deckRow!.id)
+        .maybeSingle()
+    ).data as { scheduler_position: number; scheduler_revision: number } | null;
+    const { count: claimCountAfterFirst } = await admin
+      .from("selection_claims")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", session.id);
+
+    // Retry: the browser never saw call #1's response and resends the
+    // EXACT same combined action with the SAME clientEventId/claimId --
+    // simulating a lost response, never a genuine second user action.
+    const retry = await submitAnswerAndAdvance(input, v1Tester.userId);
+    expect(retry.answerResult.ok).toBe(true);
+    if (!retry.answerResult.ok) return;
+    // The answer commit itself is replayed, never re-processed.
+    expect(retry.answerResult.data.isReplay).toBe(true);
+
+    // The retry's next-card result must be the IDENTICAL claim/card the
+    // first call already produced -- RC-B's own idempotent "existing OPEN
+    // claim" fast path (already proven in scenario 3 above), not a fresh
+    // second selection just because this outer action ran again.
+    expect(retry.nextCardFailed).toBe(false);
+    expect(retry.nextCard?.status).toBe("ok");
+    const retryNextClaimId = retry.nextCard && retry.nextCard.status === "ok" ? retry.nextCard.claimId : null;
+    expect(retryNextClaimId).toBe(firstNextClaimId);
+
+    // No second answer_event, no second scheduler advance, no second claim.
+    expect(await countAnswerEventsByClientEventId(clientEventId)).toBe(1);
+    const deckStateAfterRetry = (
+      await admin
+        .from("user_deck_learning_state")
+        .select("scheduler_position, scheduler_revision")
+        .eq("user_id", v1Tester.userId)
+        .eq("deck_id", deckRow!.id)
+        .maybeSingle()
+    ).data;
+    expect(deckStateAfterRetry).toEqual(deckStateAfterFirst);
+    const { count: claimCountAfterRetry } = await admin
+      .from("selection_claims")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", session.id);
+    expect(claimCountAfterRetry).toBe(claimCountAfterFirst);
   });
 });

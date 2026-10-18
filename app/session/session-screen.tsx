@@ -23,7 +23,7 @@
 
 import { useEffect, useReducer, useRef, useState, type RefObject } from "react";
 import Link from "next/link";
-import { submitAnswer } from "@/app/actions/answers";
+import { submitAnswerAndAdvanceAction } from "@/app/actions/answers";
 import { getNextSessionCardAction } from "@/app/actions/sessions";
 import type { NextSessionCard } from "@/app/actions/sessions";
 import {
@@ -199,7 +199,14 @@ export function SessionScreen({
     const comboBefore = card.combo;
     const enemyVisualBefore = getEnemyVisual(card.enemyType);
 
-    const result = await submitAnswer({
+    // Alpha performance optimization #2: one Server Action call commits
+    // the answer and, only on success, claims the next card server-side --
+    // collapsing what used to be two separate browser round trips
+    // (submitAnswer, then a separate refetchCard()) into one. The commit
+    // and the next-card claim remain exactly as atomic/authoritative as
+    // before (each still its own trusted RPC/transaction); only the outer
+    // browser/server orchestration changed.
+    const combined = await submitAnswerAndAdvanceAction({
       clientEventId: submission.clientEventId,
       sessionId,
       cardId: submission.cardId,
@@ -209,6 +216,8 @@ export function SessionScreen({
     });
 
     if (!mountedRef.current) return;
+
+    const result = combined.answerResult;
 
     if (result.ok) {
       const data = result.data;
@@ -248,8 +257,8 @@ export function SessionScreen({
       // a duplicate, not a new event. Both events can fire on the exact
       // same answer (the final card both masters itself and completes the
       // deck) -- each gets its own independent, non-blocking fx slot, so
-      // neither can suppress the other and neither can delay refetchCard()
-      // below.
+      // neither can suppress the other and neither can delay installing
+      // the next card below.
       if (!data.isReplay) {
         if (data.cardMasteredJustNow) {
           scheduleFx(cardMasteredFxTimeoutRef, setCardMasteredFx, { key: fxKey }, MASTERY_FX_MS);
@@ -261,7 +270,20 @@ export function SessionScreen({
 
       dispatchGuard({ type: "GRADE_RESULT", retry: false });
       setPendingSubmission(null);
-      await refetchCard();
+
+      // Normal success path: the next card already came back from the
+      // SAME server action call above -- install it directly, with no
+      // second browser/server round trip. Only when that next-card fetch
+      // itself failed (combined.nextCardFailed -- the already-committed
+      // answer above is unaffected either way) do we fall back to the
+      // existing standalone next-card retry path, which retries ONLY the
+      // next-card claim/fetch, never resubmits this already-committed
+      // answer.
+      if (combined.nextCard !== null) {
+        applyNextCard(combined.nextCard);
+      } else {
+        await refetchCard();
+      }
       return;
     }
 

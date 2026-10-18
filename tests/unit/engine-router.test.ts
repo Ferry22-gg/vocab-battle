@@ -56,7 +56,9 @@ const supabaseFrom = vi.fn();
 const createClient = vi.fn();
 vi.mock("@/lib/supabase/server", () => ({ createClient }));
 
-const { getNextSessionCardForEngine, submitAnswerForEngine } = await import("@/lib/learning/engine-router");
+const { getNextSessionCardForEngine, submitAnswerForEngine, submitAnswerAndAdvance } = await import(
+  "@/lib/learning/engine-router"
+);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -338,5 +340,134 @@ describe("submitAnswerForEngine", () => {
     const input: Record<string, unknown> = { ...BASE_INPUT };
     expect(Object.keys(input)).not.toContain("engineVersion");
     expect(Object.keys(input)).not.toContain("engine_version");
+  });
+});
+
+/**
+ * Alpha performance optimization #2: submitAnswerAndAdvance() collapses the
+ * Session UI's two separate browser round trips (submitAnswer, then a
+ * separate next-card fetch) into one server-side call. These tests prove
+ * only the OUTER orchestration this adds -- that the next-card fetch is
+ * attempted if and only if the commit succeeded, that a thrown next-card
+ * error never loses the already-committed answer result, and that neither
+ * underlying trusted call (submitAnswerForEngine / getNextSessionCardForEngine,
+ * exercised in full above) is called more than once or with different
+ * arguments than before. No new DB access, no new RPC, no new Session card
+ * shape -- this is pure composition of the two functions already covered
+ * above.
+ */
+describe("submitAnswerAndAdvance", () => {
+  const BASE_INPUT = {
+    clientEventId: "22222222-2222-2222-2222-222222222222",
+    sessionId: SESSION_ID,
+    cardId: "card-1",
+    correct: true,
+    responseTimeMs: 900,
+    claimId: "claim-1",
+  };
+
+  const FRESH_SUCCESS_DATA = {
+    isReplay: false,
+    cardMasteredJustNow: false,
+    fullMasteryJustAchieved: false,
+    dailyGoalJustCompleted: false,
+    xpEvents: [],
+    rating: "Good",
+    battle: {
+      damage: 10,
+      critical: false,
+      comboAfter: 1,
+      enemyHpAfter: 80,
+      enemyDefeated: false,
+      newEnemyType: null,
+      newEnemyMaxHp: null,
+      newEnemyHp: null,
+    },
+    session: { current_enemy_type: "enemy_a", current_enemy_max_hp: 90, current_enemy_hp: 80 },
+    profile: { total_xp: 5, level: 1, current_streak: 0, longest_streak: 0, last_daily_goal_completed_on: null },
+  };
+
+  it("commit succeeds, next card fetched successfully -> both returned in one call, nextCardFailed is false", async () => {
+    getSessionEngineVersion.mockResolvedValue("v1");
+    commitLearningEngineAnswer.mockResolvedValue(FRESH_SUCCESS_DATA);
+    getActiveSessionById.mockResolvedValue(V1_SESSION);
+    claimNextLearningEngineCard.mockResolvedValue({ reused: false, cardId: "card-2", claimId: "claim-2" });
+    mockCardContentRead({ front: "sedulous", back: "勤勉な" });
+
+    const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
+
+    expect(commitLearningEngineAnswer).toHaveBeenCalledTimes(1);
+    expect(claimNextLearningEngineCard).toHaveBeenCalledTimes(1);
+    expect(claimNextLearningEngineCard).toHaveBeenCalledWith(USER_ID, SESSION_ID);
+    expect(result.answerResult.ok).toBe(true);
+    expect(result.nextCardFailed).toBe(false);
+    expect(result.nextCard).toEqual({
+      status: "ok",
+      sessionId: SESSION_ID,
+      sessionMode: "learning",
+      cardId: "card-2",
+      front: "sedulous",
+      back: "勤勉な",
+      enemyType: "enemy_a",
+      enemyHp: 50,
+      enemyMaxHp: 90,
+      combo: 2,
+      claimId: "claim-2",
+    });
+  });
+
+  it("commit fails -> next-card claim/fetch is never attempted", async () => {
+    getSessionEngineVersion.mockResolvedValue("v1");
+    commitLearningEngineAnswer.mockRejectedValue(new Error("claim is not OPEN"));
+
+    const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
+
+    expect(result.answerResult).toEqual({
+      ok: false,
+      code: "COMMIT_FAILED",
+      message: "Something went wrong submitting your answer. Please try again.",
+    });
+    expect(result.nextCard).toBeNull();
+    expect(result.nextCardFailed).toBe(false);
+    expect(getActiveSessionById).not.toHaveBeenCalled();
+    expect(claimNextLearningEngineCard).not.toHaveBeenCalled();
+  });
+
+  it("commit succeeds but next-card fetch throws -> the committed answer is preserved, nextCardFailed is true, nextCard is null", async () => {
+    getSessionEngineVersion.mockResolvedValue("v1");
+    commitLearningEngineAnswer.mockResolvedValue(FRESH_SUCCESS_DATA);
+    getActiveSessionById.mockRejectedValue(new Error("connection reset"));
+
+    const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
+
+    expect(result.answerResult.ok).toBe(true);
+    if (result.answerResult.ok) {
+      expect(result.answerResult.data.damage).toBe(10);
+    }
+    expect(result.nextCard).toBeNull();
+    expect(result.nextCardFailed).toBe(true);
+  });
+
+  it("an idempotent replay commit still only fetches next-card once, never resubmits/re-commits", async () => {
+    getSessionEngineVersion.mockResolvedValue("v1");
+    commitLearningEngineAnswer.mockResolvedValue({
+      ...FRESH_SUCCESS_DATA,
+      isReplay: true,
+      session: null,
+      profile: null,
+    });
+    getActiveSessionById.mockResolvedValue(V1_SESSION);
+    claimNextLearningEngineCard.mockResolvedValue({ reused: true, cardId: "card-2", claimId: "claim-2" });
+    mockCardContentRead({ front: "sedulous", back: "勤勉な" });
+
+    const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
+
+    expect(commitLearningEngineAnswer).toHaveBeenCalledTimes(1);
+    expect(result.answerResult.ok).toBe(true);
+    if (result.answerResult.ok) {
+      expect(result.answerResult.data.isReplay).toBe(true);
+    }
+    expect(result.nextCard?.status).toBe("ok");
+    expect(result.nextCardFailed).toBe(false);
   });
 });
