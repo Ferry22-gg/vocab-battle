@@ -54,7 +54,7 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
     await resetTesterLearnerData(RC_B_CLAIM_TESTER_B);
   });
 
-  it("a fresh v1 session claims a real card from the newly-normalized starter deck", async () => {
+  it("a fresh v1 session claims a real card from the newly-normalized starter deck, and the RPC's own front/back match the card row exactly (Alpha perf addition, item A)", async () => {
     const result = await claimNextLearningEngineCard(testerA.userId, sessionAId);
 
     expect(result.reused).toBe(false);
@@ -66,8 +66,15 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
     firstClaimCardId = result.cardId;
 
     const admin = createAdminClient();
-    const { data: card } = await admin.from("cards").select("deck_id").eq("id", result.cardId!).maybeSingle();
+    const { data: card } = await admin.from("cards").select("deck_id, front, back").eq("id", result.cardId!).maybeSingle();
     expect(card?.deck_id).toBe(testerA.deckId);
+    // The RPC's own returned content must match the authoritative card
+    // row byte-for-byte -- no separate getCardFrontBack() SELECT is
+    // issued anywhere in this flow anymore.
+    expect(result.front).toBe(card?.front);
+    expect(result.back).toBe(card?.back);
+    expect(result.front).toBeTruthy();
+    expect(result.back).toBeTruthy();
 
     const { data: deckState } = await admin
       .from("user_deck_learning_state")
@@ -112,22 +119,44 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
     expect(selected?.active_draws_since_eligible).toBe(0);
   });
 
-  it("a retry for the same session returns the SAME claim unchanged (lost-response idempotency)", async () => {
+  it("a retry for the same session returns the SAME claim AND same card content unchanged (lost-response idempotency, item B/F/8)", async () => {
     const first = await claimNextLearningEngineCard(testerA.userId, sessionAId);
     expect(first.reused).toBe(true); // the prior test already created an OPEN claim
+
+    const admin = createAdminClient();
+    const { data: deckStateBefore } = await admin
+      .from("user_deck_learning_state")
+      .select("scheduler_position, scheduler_revision")
+      .eq("user_id", testerA.userId)
+      .eq("deck_id", testerA.deckId)
+      .maybeSingle();
 
     const second = await claimNextLearningEngineCard(testerA.userId, sessionAId);
     expect(second.reused).toBe(true);
     expect(second.claimId).toBe(first.claimId);
     expect(second.cardId).toBe(first.cardId);
     expect(second.selectionTraceId).toBe(first.selectionTraceId);
+    // Alpha perf addition: the reuse path returns the SAME card content
+    // both times, without issuing a second claim, a second scheduler
+    // advance, or a separate content SELECT.
+    expect(second.front).toBe(first.front);
+    expect(second.back).toBe(first.back);
+    expect(second.front).toBeTruthy();
+    expect(second.back).toBeTruthy();
 
-    const admin = createAdminClient();
     const { count } = await admin
       .from("selection_claims")
       .select("id", { count: "exact", head: true })
       .eq("session_id", sessionAId);
     expect(count).toBe(1);
+
+    const { data: deckStateAfter } = await admin
+      .from("user_deck_learning_state")
+      .select("scheduler_position, scheduler_revision")
+      .eq("user_id", testerA.userId)
+      .eq("deck_id", testerA.deckId)
+      .maybeSingle();
+    expect(deckStateAfter).toEqual(deckStateBefore);
   });
 
   it("concurrent claim requests for the same fresh session converge on exactly one OPEN claim", async () => {
@@ -139,6 +168,12 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
     expect(resultOne.claimId).not.toBeNull();
     expect(resultOne.claimId).toBe(resultTwo.claimId);
     expect(resultOne.cardId).toBe(resultTwo.cardId);
+    // Both concurrent callers must see the identical card content, not
+    // just the identical claim/card id.
+    expect(resultOne.front).toBe(resultTwo.front);
+    expect(resultOne.back).toBe(resultTwo.back);
+    expect(resultOne.front).toBeTruthy();
+    expect(resultOne.back).toBeTruthy();
 
     const admin = createAdminClient();
     const { count: claimCount } = await admin
@@ -155,10 +190,13 @@ describe("Learning Engine v1 Runtime Cutover RC-B: claimNextLearningEngineCard (
 
     const { data: deckState } = await admin
       .from("user_deck_learning_state")
-      .select("scheduler_revision")
+      .select("scheduler_position, scheduler_revision")
       .eq("user_id", testerB.userId)
       .eq("deck_id", testerB.deckId)
       .maybeSingle();
+    // Claiming never advances scheduler_position (answer-commit-only);
+    // exactly one revision bump from the single genuine claim, not two.
+    expect(deckState?.scheduler_position).toBe(0);
     expect(deckState?.scheduler_revision).toBe(1);
   });
 

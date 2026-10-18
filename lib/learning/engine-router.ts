@@ -27,7 +27,6 @@ import "server-only";
  * this codebase.
  */
 
-import { createClient } from "@/lib/supabase/server";
 import {
   getActiveSessionById,
   getNextSessionCard,
@@ -80,21 +79,6 @@ export async function getNextSessionCardForEngine(userId: string, sessionId: str
   return getNextLearningEngineSessionCard(userId, session);
 }
 
-async function getCardFrontBack(cardId: string): Promise<{ readonly front: string; readonly back: string } | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("cards")
-    .select("front, back")
-    .eq("id", cardId)
-    .maybeSingle<{ front: string; back: string }>();
-
-  if (error) {
-    throw new Error("Failed to load claimed card content", { cause: error });
-  }
-
-  return data;
-}
-
 /**
  * RC-D section 13: adapts RC-B's claim output into the exact same
  * presentation shape the Session UI already consumes for a legacy card
@@ -102,6 +86,16 @@ async function getCardFrontBack(cardId: string): Promise<{ readonly front: strin
  * scheduler-revision/repair-reason field is ever added to this shape).
  * `session`'s shared Battle fields (enemy/combo) come from the `sessions`
  * row, identically to legacy -- RC-B's claim never touches them.
+ *
+ * Alpha performance optimization: `claimNextLearningEngineCard()` now
+ * returns the claimed card's front/back directly (supplied by whichever
+ * trusted source produced the claim -- the snapshot RPC's `openClaim` on
+ * the primary reload fast path, or the claim RPC itself otherwise), so
+ * this function no longer issues a separate card-content SELECT. A card
+ * was claimed (`claim.cardId` is non-null) but its content came back
+ * null is a genuine invariant violation -- surfaced as the same
+ * LEARNING_ENGINE_V1_CLAIM_INVALID anomaly a missing card row would have
+ * produced before this change, never silently rendered blank.
  */
 async function getNextLearningEngineSessionCard(userId: string, session: SessionRow): Promise<NextSessionCard> {
   // Defensive only, mirroring get_next_session_card()'s own
@@ -119,12 +113,12 @@ async function getNextLearningEngineSessionCard(userId: string, session: Session
     return { status: "no_card", reason: "LEARNING_ENGINE_V1_NO_CARD" };
   }
 
-  const card = await getCardFrontBack(claim.cardId);
-  if (card === null) {
-    // Anomaly: claim_next_learning_engine_card() already validates the
-    // card belongs to this session's deck and is not soft-deleted before
-    // ever claiming it, so this should never trip under normal
-    // operation -- surfaced rather than silently papered over.
+  if (claim.front === null || claim.back === null) {
+    // Anomaly: claim_next_learning_engine_card() (and the snapshot RPC's
+    // own OPEN-claim fast path) already validate the card belongs to
+    // this session's deck and is not soft-deleted before ever claiming
+    // it, so this should never trip under normal operation -- surfaced
+    // rather than silently papered over or fabricated.
     return { status: "error", reason: "LEARNING_ENGINE_V1_CLAIM_INVALID" };
   }
 
@@ -135,8 +129,8 @@ async function getNextLearningEngineSessionCard(userId: string, session: Session
     // only to satisfy the shared presentation shape's type.
     sessionMode: "learning",
     cardId: claim.cardId,
-    front: card.front,
-    back: card.back,
+    front: claim.front,
+    back: claim.back,
     enemyType: session.current_enemy_type as EnemyId,
     enemyHp: session.current_enemy_hp,
     enemyMaxHp: session.current_enemy_max_hp,

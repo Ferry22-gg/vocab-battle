@@ -77,6 +77,17 @@ export interface ClaimNextLearningEngineCardResult {
   readonly selectionTraceId: string | null;
   readonly schedulerPosition: number;
   readonly schedulerRevision: number;
+  /**
+   * Alpha performance optimization: the claimed card's own display
+   * content, supplied directly by whichever trusted source produced this
+   * result (the snapshot RPC's `openClaim` on the primary fast path, or
+   * the claim RPC itself otherwise) -- the caller
+   * (lib/learning/engine-router.ts) no longer issues a separate
+   * getCardFrontBack() SELECT. `null` only when `cardId` is also `null`
+   * (no card was claimed).
+   */
+  readonly front: string | null;
+  readonly back: string | null;
 }
 
 export class ClaimRetryExhaustedError extends Error {
@@ -114,6 +125,8 @@ export async function claimNextLearningEngineCard(
         selectionTraceId: raw.openClaim.selectionTraceId,
         schedulerPosition: raw.openClaim.schedulerPosition,
         schedulerRevision: raw.openClaim.schedulerRevision,
+        front: raw.openClaim.front,
+        back: raw.openClaim.back,
       };
     }
 
@@ -191,6 +204,8 @@ export async function claimNextLearningEngineCard(
           selectionTraceId: claim.selection_trace_id,
           schedulerPosition: claim.scheduler_position,
           schedulerRevision: claim.scheduler_revision,
+          front: result.cardFront,
+          back: result.cardBack,
         };
       }
 
@@ -201,6 +216,8 @@ export async function claimNextLearningEngineCard(
         selectionTraceId: result.trace?.id ?? null,
         schedulerPosition: snapshot.deckState.schedulerPosition,
         schedulerRevision: result.schedulerRevision,
+        front: result.cardFront,
+        back: result.cardBack,
       };
     } catch (err) {
       if (isStaleSnapshotError(err)) {

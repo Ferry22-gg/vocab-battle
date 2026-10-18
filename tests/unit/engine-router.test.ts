@@ -52,10 +52,6 @@ vi.mock("@/lib/learning/submit-answer", () => ({
   validateInput,
 }));
 
-const supabaseFrom = vi.fn();
-const createClient = vi.fn();
-vi.mock("@/lib/supabase/server", () => ({ createClient }));
-
 const { getNextSessionCardForEngine, submitAnswerForEngine, submitAnswerAndAdvance } = await import(
   "@/lib/learning/engine-router"
 );
@@ -82,14 +78,6 @@ const LEGACY_SESSION = {
 
 const V1_SESSION = { ...LEGACY_SESSION, engine_version: "v1" };
 
-function mockCardContentRead(row: { front: string; back: string } | null) {
-  const maybeSingle = vi.fn().mockResolvedValue({ data: row, error: null });
-  const eq = vi.fn().mockReturnValue({ maybeSingle });
-  const select = vi.fn().mockReturnValue({ eq });
-  supabaseFrom.mockReturnValue({ select });
-  createClient.mockResolvedValue({ from: supabaseFrom });
-}
-
 describe("getNextSessionCardForEngine", () => {
   it("returns not_found when the session does not exist/is inaccessible", async () => {
     getActiveSessionById.mockResolvedValue(null);
@@ -114,8 +102,13 @@ describe("getNextSessionCardForEngine", () => {
 
   it("v1 session -> routes to RC-B's claimNextLearningEngineCard(), never legacy getNextSessionCard()", async () => {
     getActiveSessionById.mockResolvedValue(V1_SESSION);
-    claimNextLearningEngineCard.mockResolvedValue({ reused: false, cardId: "card-1", claimId: "claim-1" });
-    mockCardContentRead({ front: "ubiquitous", back: "遍在する" });
+    claimNextLearningEngineCard.mockResolvedValue({
+      reused: false,
+      cardId: "card-1",
+      claimId: "claim-1",
+      front: "ubiquitous",
+      back: "遍在する",
+    });
 
     const result = await getNextSessionCardForEngine(USER_ID, SESSION_ID);
 
@@ -136,10 +129,15 @@ describe("getNextSessionCardForEngine", () => {
     });
   });
 
-  it("v1 reload with an existing OPEN claim returns the SAME claim id (RC-B's own idempotent fast path, surfaced unchanged)", async () => {
+  it("v1 reload with an existing OPEN claim returns the SAME claim id and SAME card content (RC-B's own idempotent fast path, surfaced unchanged)", async () => {
     getActiveSessionById.mockResolvedValue(V1_SESSION);
-    claimNextLearningEngineCard.mockResolvedValue({ reused: true, cardId: "card-1", claimId: "claim-1" });
-    mockCardContentRead({ front: "ubiquitous", back: "遍在する" });
+    claimNextLearningEngineCard.mockResolvedValue({
+      reused: true,
+      cardId: "card-1",
+      claimId: "claim-1",
+      front: "ubiquitous",
+      back: "遍在する",
+    });
 
     const first = await getNextSessionCardForEngine(USER_ID, SESSION_ID);
     const second = await getNextSessionCardForEngine(USER_ID, SESSION_ID);
@@ -149,6 +147,10 @@ describe("getNextSessionCardForEngine", () => {
     if (first.status === "ok" && second.status === "ok") {
       expect(second.claimId).toBe(first.claimId);
       expect(second.cardId).toBe(first.cardId);
+      expect(second.front).toBe(first.front);
+      expect(second.back).toBe(first.back);
+      expect(first.front).toBe("ubiquitous");
+      expect(first.back).toBe("遍在する");
     }
   });
 
@@ -179,13 +181,38 @@ describe("getNextSessionCardForEngine", () => {
       selectionTraceId: "trace-1",
       schedulerPosition: 4,
       schedulerRevision: 1,
+      front: "ubiquitous",
+      back: "遍在する",
     });
-    mockCardContentRead({ front: "ubiquitous", back: "遍在する" });
 
     const result = await getNextSessionCardForEngine(USER_ID, SESSION_ID);
 
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(/selectionTraceId|schedulerPosition|schedulerRevision|source|policy/i);
+  });
+
+  it("a claimed card (cardId non-null) whose content came back null is a clear anomaly -- never silently rendered blank", async () => {
+    getActiveSessionById.mockResolvedValue(V1_SESSION);
+    claimNextLearningEngineCard.mockResolvedValue({
+      reused: false,
+      cardId: "card-1",
+      claimId: "claim-1",
+      front: null,
+      back: null,
+    });
+
+    const result = await getNextSessionCardForEngine(USER_ID, SESSION_ID);
+
+    expect(result).toEqual({ status: "error", reason: "LEARNING_ENGINE_V1_CLAIM_INVALID" });
+  });
+
+  it("performance optimization: the v1 next-card path never imports/calls the removed getCardFrontBack() SELECT -- engine-router.ts no longer references lib/supabase/server at all", async () => {
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("../../lib/learning/engine-router.ts", import.meta.url), "utf8"),
+    );
+    expect(source).not.toMatch(/getCardFrontBack/);
+    expect(source).not.toMatch(/from\(["']cards["']\)/);
+    expect(source).not.toMatch(/@\/lib\/supabase\/server/);
   });
 });
 
@@ -391,8 +418,13 @@ describe("submitAnswerAndAdvance", () => {
     getSessionEngineVersion.mockResolvedValue("v1");
     commitLearningEngineAnswer.mockResolvedValue(FRESH_SUCCESS_DATA);
     getActiveSessionById.mockResolvedValue(V1_SESSION);
-    claimNextLearningEngineCard.mockResolvedValue({ reused: false, cardId: "card-2", claimId: "claim-2" });
-    mockCardContentRead({ front: "sedulous", back: "勤勉な" });
+    claimNextLearningEngineCard.mockResolvedValue({
+      reused: false,
+      cardId: "card-2",
+      claimId: "claim-2",
+      front: "sedulous",
+      back: "勤勉な",
+    });
 
     const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
 
@@ -457,8 +489,13 @@ describe("submitAnswerAndAdvance", () => {
       profile: null,
     });
     getActiveSessionById.mockResolvedValue(V1_SESSION);
-    claimNextLearningEngineCard.mockResolvedValue({ reused: true, cardId: "card-2", claimId: "claim-2" });
-    mockCardContentRead({ front: "sedulous", back: "勤勉な" });
+    claimNextLearningEngineCard.mockResolvedValue({
+      reused: true,
+      cardId: "card-2",
+      claimId: "claim-2",
+      front: "sedulous",
+      back: "勤勉な",
+    });
 
     const result = await submitAnswerAndAdvance(BASE_INPUT, USER_ID);
 
@@ -469,5 +506,9 @@ describe("submitAnswerAndAdvance", () => {
     }
     expect(result.nextCard?.status).toBe("ok");
     expect(result.nextCardFailed).toBe(false);
+    if (result.nextCard?.status === "ok") {
+      expect(result.nextCard.front).toBe("sedulous");
+      expect(result.nextCard.back).toBe("勤勉な");
+    }
   });
 });

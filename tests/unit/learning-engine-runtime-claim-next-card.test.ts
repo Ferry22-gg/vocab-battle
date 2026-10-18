@@ -137,7 +137,7 @@ function makeDecision(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe("claimNextLearningEngineCard", () => {
-  it("fast path: an existing OPEN claim bypasses chooseNextCard entirely", async () => {
+  it("fast path: an existing OPEN claim bypasses chooseNextCard entirely, and returns its card content directly", async () => {
     fetchSchedulerSnapshot.mockResolvedValue({
       ...RAW_SNAPSHOT_NO_OPEN_CLAIM,
       openClaim: {
@@ -146,6 +146,8 @@ describe("claimNextLearningEngineCard", () => {
         selectionTraceId: "trace-9",
         schedulerPosition: 5,
         schedulerRevision: 2,
+        front: "ubiquitous",
+        back: "遍在する",
       },
     });
 
@@ -158,12 +160,14 @@ describe("claimNextLearningEngineCard", () => {
       selectionTraceId: "trace-9",
       schedulerPosition: 5,
       schedulerRevision: 2,
+      front: "ubiquitous",
+      back: "遍在する",
     });
     expect(chooseNextCard).not.toHaveBeenCalled();
     expect(claimNextLearningEngineCardRpc).not.toHaveBeenCalled();
   });
 
-  it("successful decision calls the claim RPC exactly once", async () => {
+  it("successful decision calls the claim RPC exactly once, and returns the claimed card's content directly (item A)", async () => {
     fetchSchedulerSnapshot.mockResolvedValue(RAW_SNAPSHOT_NO_OPEN_CLAIM);
     mapRawSchedulerSnapshot.mockReturnValue(MAPPED_SNAPSHOT);
     chooseNextCard.mockReturnValue(makeDecision());
@@ -172,6 +176,8 @@ describe("claimNextLearningEngineCard", () => {
       claim: { id: "claim-2", card_id: "card-1", selection_trace_id: "trace-2", scheduler_position: 5, scheduler_revision: 3 },
       trace: { id: "trace-2", card_id: "card-1", scheduler_position: 5, scheduler_revision: 2 },
       schedulerRevision: 3,
+      cardFront: "ubiquitous",
+      cardBack: "遍在する",
     });
 
     const result = await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
@@ -185,6 +191,8 @@ describe("claimNextLearningEngineCard", () => {
       selectionTraceId: "trace-2",
       schedulerPosition: 5,
       schedulerRevision: 3,
+      front: "ubiquitous",
+      back: "遍在する",
     });
   });
 
@@ -232,6 +240,8 @@ describe("claimNextLearningEngineCard", () => {
       claim: { id: "claim-2", card_id: "card-1", selection_trace_id: "trace-2", scheduler_position: 5, scheduler_revision: 3 },
       trace: { id: "trace-2", card_id: "card-1", scheduler_position: 5, scheduler_revision: 2 },
       schedulerRevision: 3,
+      cardFront: "front-1",
+      cardBack: "back-1",
     });
 
     await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
@@ -256,6 +266,8 @@ describe("claimNextLearningEngineCard", () => {
       claim: { id: "claim-8", card_id: "card-7", selection_trace_id: "trace-8", scheduler_position: 5, scheduler_revision: 3 },
       trace: { id: "trace-8", card_id: "card-7", scheduler_position: 5, scheduler_revision: 2 },
       schedulerRevision: 3,
+      cardFront: "front-7",
+      cardBack: "back-7",
     });
 
     await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
@@ -276,6 +288,8 @@ describe("claimNextLearningEngineCard", () => {
         claim: { id: "claim-3", card_id: "card-1", selection_trace_id: "trace-3", scheduler_position: 5, scheduler_revision: 4 },
         trace: { id: "trace-3", card_id: "card-1", scheduler_position: 5, scheduler_revision: 3 },
         schedulerRevision: 4,
+        cardFront: "front-1",
+        cardBack: "back-1",
       });
 
     const result = await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
@@ -285,6 +299,8 @@ describe("claimNextLearningEngineCard", () => {
     expect(claimNextLearningEngineCardRpc).toHaveBeenCalledTimes(2);
     expect(result.claimId).toBe("claim-3");
     expect(result.schedulerRevision).toBe(4);
+    expect(result.front).toBe("front-1");
+    expect(result.back).toBe("back-1");
   });
 
   it("a stale-revision retry caused by a changed schedulable card set re-reads the FRESH card set and the re-decision reflects it (review correction)", async () => {
@@ -317,6 +333,8 @@ describe("claimNextLearningEngineCard", () => {
         claim: { id: "claim-5", card_id: "card-new", selection_trace_id: "trace-5", scheduler_position: 5, scheduler_revision: 6 },
         trace: { id: "trace-5", card_id: "card-new", scheduler_position: 5, scheduler_revision: 5 },
         schedulerRevision: 6,
+        cardFront: "front-new",
+        cardBack: "back-new",
       });
 
     const result = await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
@@ -330,6 +348,8 @@ describe("claimNextLearningEngineCard", () => {
     // orchestrator used the re-decision rather than the stale one.
     expect(result.cardId).toBe("card-new");
     expect(result.claimId).toBe("claim-5");
+    expect(result.front).toBe("front-new");
+    expect(result.back).toBe("back-new");
   });
 
   it("the retry bound is enforced -- persistent stale-revision conflicts throw ClaimRetryExhaustedError after exactly MAX_CLAIM_ATTEMPTS attempts", async () => {
@@ -374,11 +394,15 @@ describe("claimNextLearningEngineCard", () => {
       claim: null,
       trace: { id: "trace-4", card_id: null, scheduler_position: 5, scheduler_revision: 2 },
       schedulerRevision: 2,
+      cardFront: null,
+      cardBack: null,
     });
 
     const result = await claimNextLearningEngineCard(USER_ID, SESSION_ID, () => 0.5);
 
     expect(result.reused).toBe(false);
+    expect(result.front).toBeNull();
+    expect(result.back).toBeNull();
     expect(result.cardId).toBeNull();
     expect(result.claimId).toBeNull();
     expect(result.selectionTraceId).toBe("trace-4");

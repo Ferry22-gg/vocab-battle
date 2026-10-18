@@ -90,6 +90,17 @@ export interface ClaimRpcResult {
   readonly trace: PersistedSelectionTraceRowForClaim | null;
   /** The authoritative scheduler_revision after this call -- unchanged on the fast path and the no-mutation path, incremented by exactly 1 on a genuine claim-time state mutation. Always present; never inferred from `claim` (which is null on a no-card decision even when admissions/queue/bag still mutated). */
   readonly schedulerRevision: number;
+  /**
+   * Alpha performance optimization: the claimed card's own display
+   * content (both the rare RPC-level "existing OPEN claim" race-window
+   * branch and the normal fresh-claim branch supply this; the no-card/
+   * no-mutation branch returns `null` for both, since no card was
+   * claimed). Lets the caller (claim-next-card.ts) skip a follow-up
+   * SELECT -- see the migration this field was added by
+   * (20261025000000_learning_engine_v1_claim_card_content.sql).
+   */
+  readonly cardFront: string | null;
+  readonly cardBack: string | null;
 }
 
 export interface ClaimNextLearningEngineCardRpcInput {

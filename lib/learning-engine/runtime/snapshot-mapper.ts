@@ -122,6 +122,17 @@ export interface RawSchedulerSnapshotOpenClaim {
   readonly selectionTraceId: string;
   readonly schedulerPosition: number;
   readonly schedulerRevision: number;
+  /**
+   * Alpha performance optimization: the claimed card's own display
+   * content, joined in by the trusted RPC itself so the orchestrator's
+   * fast path (claim-next-card.ts) never needs a follow-up SELECT.
+   * Never consumed by this module -- `mapRawSchedulerSnapshot()` doesn't
+   * surface `openClaim` into `DeckSchedulerSnapshot` at all, since
+   * chooseNextCard() never runs on this fast path -- only
+   * claim-next-card.ts's own orchestration reads these fields directly.
+   */
+  readonly front: string | null;
+  readonly back: string | null;
 }
 
 export interface RawSchedulerSnapshot {
