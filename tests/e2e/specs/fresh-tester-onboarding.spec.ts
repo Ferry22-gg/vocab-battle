@@ -18,10 +18,10 @@ test("fresh active tester: login through onboarding to Home", async ({
 
   await expectPath(page, "/onboarding/deck");
 
-  // Exactly the two official starter decks, by name, are offered -- not
-  // just "some two decks".
+  // Exactly the three official starter decks are offered (two English
+  // decks plus Swahili Basics) -- not just "some three decks".
   const deckRadios = page.locator('input[name="deckId"]');
-  await expect(deckRadios).toHaveCount(2);
+  await expect(deckRadios).toHaveCount(3);
   await expect(
     page.getByText("Advanced English Vocabulary I", { exact: true })
   ).toBeVisible();
